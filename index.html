@@ -208,6 +208,57 @@
   .foot-note { font-size: 12px; opacity: 0.6; text-align: center; margin-top: 20px; }
   .loading { text-align: center; padding: 60px 0; opacity: 0.8; }
 
+  .info-card {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 10px;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .info-card h3 {
+    font-family: var(--font-display);
+    font-size: 14px;
+    letter-spacing: 0.08em;
+    margin: 0 0 8px;
+    color: var(--gold);
+  }
+  .info-card p { margin: 0 0 8px; }
+  .info-card p:last-child { margin-bottom: 0; }
+  .formula {
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 8px 0;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .example-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  .example-table td { padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+  .example-table td:last-child { text-align: right; font-family: var(--font-display); }
+  .pos { color: #7CD9A0; }
+  .neg { color: var(--red-light); }
+
+  .auth-box {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-top: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .auth-box input {
+    padding: 11px 12px;
+    border-radius: 8px;
+    border: none;
+    font-size: 15px;
+    background: var(--cream);
+    color: #1c1c1c;
+  }
+
   @media (max-width: 480px) {
     h1 { font-size: 40px; }
     .teams { flex-direction: column; }
@@ -260,13 +311,17 @@ const state = {
   scoreA: 0,
   scoreB: 0,
   busy: false,
+  session: null,
 };
+
+const isAdmin = () => !!state.session;
 
 const TABS = [
   ["classifica", "Classifica"],
   ["partita", "Nuova partita"],
   ["storico", "Storico"],
   ["rosa", "Giocatori"],
+  ["elo", "ELO"],
 ];
 
 const esc = (s) =>
@@ -435,6 +490,10 @@ function render() {
   }
 
   if (tab === "partita") {
+    if (!isAdmin()) {
+      app.innerHTML = `<div class="empty">Solo un admin può registrare le partite.<br>Accedi dalla scheda Giocatori.</div>`;
+      return;
+    }
     if (players.length < 2) {
       app.innerHTML = `<div class="empty">Servono almeno 2 giocatori in rosa.</div>`;
       return;
@@ -519,7 +578,54 @@ function render() {
         </div>
       </div>`;
     }).join("");
-    app.innerHTML = `<button class="undo" id="undo">Annulla ultima partita</button>${rows}`;
+    const undoBtn = isAdmin()
+      ? `<button class="undo" id="undo">Annulla ultima partita</button>`
+      : "";
+    app.innerHTML = `${undoBtn}${rows}`;
+    return;
+  }
+
+  if (tab === "elo") {
+    app.innerHTML = `
+      <div class="info-card">
+        <h3>LE BASI</h3>
+        <p>Tutti partono da <b>1000 punti</b>. Dopo ogni partita il vincitore prende punti e il perdente li perde: quello che guadagna una squadra è esattamente quello che perde l'altra. Il rating non misura quante partite hai vinto, ma <b>quanto sei forte rispetto agli altri</b>.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>QUANTO VALE UNA VITTORIA</h3>
+        <p>Dipende da tre cose.</p>
+        <p><b>1. Chi hai battuto.</b> Prima della partita il sistema calcola la probabilità di vittoria dal divario di rating:</p>
+        <div class="formula">attesa = 1 / (1 + 10^((eloAvv − eloTuo) / 400))</div>
+        <p>Battere un avversario molto più forte vale tanto, battere l'ultimo in classifica vale poco. Perdere da favorito costa caro, perdere da sfavorito costa quasi niente.</p>
+        <p><b>2. Il punteggio.</b> Il delta viene moltiplicato per un fattore che cresce col divario di gol:</p>
+        <div class="formula">mov = ln(diffGol + 1) × 2.2 / (diffElo × 0.001 + 2.2)</div>
+        <p>Un 10-9 vale circa <b>0.7×</b> il valore base, un 10-0 circa <b>2.4×</b>. La seconda parte della formula smorza i cappotti del favorito e amplifica quelli dello sfavorito, così i più forti non gonfiano il rating massacrando gli ultimi.</p>
+        <p><b>3. Il tuo compagno</b> (solo 2v2, vedi sotto).</p>
+      </div>
+
+      <div class="info-card">
+        <h3>IL 2v2 E IL COMPAGNO</h3>
+        <p>Il rating di squadra è la <b>media</b> dei due giocatori, e con quello si calcolano attesa e delta totale. Poi il bottino viene diviso in modo inversamente proporzionale al rating:</p>
+        <p>Se vinci, <b>il più debole della coppia prende la fetta più grande</b>: ha sovraperformato il suo rating. Se perdete, <b>il più forte perde di più</b>: da lui ci si aspettava che trascinasse la squadra.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>ESEMPIO CONCRETO</h3>
+        <p>Marco (1100) e Luca (900) battono 10-3 una coppia da 1000 e 1000. Le medie sono pari, quindi attesa 50%. Il moltiplicatore per il 10-3 è ln(8) ≈ 2.1, e il montepremi totale è circa 67 punti:</p>
+        <table class="example-table">
+          <tr><td>Luca (900, il più debole)</td><td class="pos">+37</td></tr>
+          <tr><td>Marco (1100, il più forte)</td><td class="pos">+30</td></tr>
+          <tr><td>Avversario 1 (1000)</td><td class="neg">−33</td></tr>
+          <tr><td>Avversario 2 (1000)</td><td class="neg">−33</td></tr>
+        </table>
+        <p style="margin-top:8px">Se la stessa partita fosse finita 10-9, il montepremi sarebbe stato di circa 22 punti.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>IN PRATICA</h3>
+        <p>Vuoi salire in fretta? Sfida chi sta sopra di te, gioca in coppia col più scarso e vinci largo. Vuoi difendere il primo posto? Non ti conviene nasconderti: contro i deboli hai poco da guadagnare e tanto da perdere.</p>
+      </div>`;
     return;
   }
 
@@ -530,13 +636,31 @@ function render() {
         <div class="meta">ELO ${p.elo} · ${p.wins}V–${p.losses}S</div>
       </div>`
     ).join("");
+
+    const addForm = isAdmin()
+      ? `<div class="add-row">
+          <input id="new-name" placeholder="Nome giocatore" maxlength="30">
+          <button id="add-player">Aggiungi</button>
+        </div>`
+      : "";
+
+    const authBox = isAdmin()
+      ? `<div class="auth-box">
+          <div class="meta" style="margin-bottom:8px">Admin: ${esc(state.session.user.email)}</div>
+          <button class="undo" id="logout" style="margin-bottom:0">Esci</button>
+        </div>`
+      : `<div class="auth-box">
+          <div class="meta" style="margin-bottom:8px">Accesso admin</div>
+          <input id="login-email" type="email" placeholder="Email" autocomplete="username">
+          <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+          <button class="cta" id="login" style="font-size:14px;padding:11px 0">Accedi</button>
+        </div>`;
+
     app.innerHTML = `
-      <div class="add-row">
-        <input id="new-name" placeholder="Nome giocatore" maxlength="30">
-        <button id="add-player">Aggiungi</button>
-      </div>
-      ${rows}
-      <div class="foot-note">La classifica è condivisa: chiunque apra questa pagina vede e aggiorna gli stessi dati.</div>`;
+      ${addForm}
+      ${rows || `<div class="empty">Nessun giocatore in rosa.</div>`}
+      ${authBox}
+      <div class="foot-note">La classifica è pubblica in lettura; solo gli admin possono registrare partite e giocatori.</div>`;
   }
 }
 
@@ -591,6 +715,24 @@ document.addEventListener("click", async (e) => {
     }
     return;
   }
+  if (t.id === "login") {
+    const email = document.getElementById("login-email").value.trim();
+    const password = document.getElementById("login-pass").value;
+    if (!email || !password) return;
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) {
+      toast("Credenziali non valide", false);
+      return;
+    }
+    toast("Accesso effettuato");
+    // state.session viene aggiornato da onAuthStateChange
+    return;
+  }
+  if (t.id === "logout") {
+    await sb.auth.signOut();
+    toast("Sei uscito");
+    return;
+  }
 });
 
 document.addEventListener("change", (e) => {
@@ -606,9 +748,19 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.id === "new-name") {
     document.getElementById("add-player")?.click();
   }
+  if (e.key === "Enter" && (e.target.id === "login-email" || e.target.id === "login-pass")) {
+    document.getElementById("login")?.click();
+  }
 });
 
 // ---------- Avvio ----------
+const { data: sessionData } = await sb.auth.getSession();
+state.session = sessionData.session;
+sb.auth.onAuthStateChange((_event, session) => {
+  state.session = session;
+  render();
+});
+
 await loadAll();
 render();
 </script>
