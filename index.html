@@ -31,7 +31,6 @@
     overflow-x: hidden;
     padding: 32px 16px 64px;
   }
-  /* segni del campo */
   body::before {
     content: "";
     position: absolute;
@@ -64,22 +63,35 @@
   .subtitle { font-size: 13px; opacity: 0.75; margin-top: 6px; font-style: italic; }
 
   nav {
-    display: flex; gap: 6px;
+    display: flex; flex-wrap: wrap; gap: 5px;
     margin-bottom: 20px;
     background: rgba(0,0,0,0.25);
     border-radius: 10px;
     padding: 5px;
   }
   nav button {
-    flex: 1; padding: 9px 4px;
+    flex: 1 1 30%;
+    padding: 9px 4px;
     border: none; border-radius: 7px;
     background: transparent;
     color: var(--cream);
     font-family: var(--font-body);
     font-size: 13px; font-weight: 600;
     cursor: pointer; opacity: 0.7;
+    position: relative;
   }
   nav button.active { background: var(--wood); color: #241505; opacity: 1; }
+  .badge {
+    position: absolute;
+    top: 2px; right: 6px;
+    background: var(--red);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 800;
+    border-radius: 9px;
+    padding: 1px 5px;
+    line-height: 1.3;
+  }
 
   .toast {
     padding: 10px 14px; border-radius: 8px;
@@ -106,6 +118,16 @@
   .player-name { font-weight: 700; font-size: 16px; }
   .meta { font-size: 12px; opacity: 0.65; margin-top: 2px; }
   .elo { font-family: var(--font-display); font-size: 24px; letter-spacing: 0.02em; }
+
+  .dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 3px;
+  }
+  .dot.w { background: #7CD9A0; }
+  .dot.l { background: var(--red-light); }
+  .streak { color: var(--gold); font-weight: 700; }
 
   .mode-row { display: flex; gap: 8px; margin-bottom: 18px; }
   .mode-row button {
@@ -156,6 +178,23 @@
   .score-num { font-family: var(--font-display); font-size: 34px; min-width: 44px; text-align: center; }
   .team-card.red .score-num { color: var(--red-light); }
   .team-card.blue .score-num { color: var(--blue-light); }
+  .win-btn {
+    margin-top: 4px;
+    padding: 12px 0;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,0.08);
+    color: var(--cream);
+    font-family: var(--font-display);
+    font-size: 13px;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+  }
+  .win-btn.active {
+    background: var(--gold);
+    color: #241505;
+    border-color: var(--gold);
+  }
 
   .hint { font-size: 13px; opacity: 0.75; text-align: center; margin-bottom: 12px; font-style: italic; }
   .cta {
@@ -177,6 +216,14 @@
     font-size: 13px; cursor: pointer;
     margin-bottom: 14px;
   }
+  .section-label {
+    font-family: var(--font-display);
+    font-size: 12px;
+    letter-spacing: 0.15em;
+    opacity: 0.8;
+    margin: 18px 0 8px;
+  }
+  .section-label:first-child { margin-top: 0; }
   .match-row {
     display: flex; align-items: center; gap: 12px;
     background: var(--panel);
@@ -185,10 +232,23 @@
     margin-bottom: 8px;
     font-size: 14px;
   }
+  .match-row.pending { border: 1px dashed rgba(232,179,65,0.5); }
   .match-row .team-a { color: var(--red-light); font-weight: 700; }
   .match-row .team-b { color: var(--blue-light); font-weight: 700; }
   .match-score { font-family: var(--font-display); font-size: 20px; white-space: nowrap; }
   .match-score .win { color: var(--gold); }
+  .confirm-actions { display: flex; gap: 6px; margin-top: 8px; }
+  .confirm-actions button {
+    flex: 1;
+    padding: 7px 0;
+    border-radius: 7px;
+    border: none;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .btn-confirm { background: #1E7A4C; color: #fff; }
+  .btn-reject { background: transparent; color: var(--cream); border: 1px solid var(--line) !important; }
 
   .add-row { display: flex; gap: 8px; margin-bottom: 16px; }
   .add-row input {
@@ -204,9 +264,6 @@
     font-weight: 800; font-size: 14px;
     cursor: pointer;
   }
-  .empty { text-align: center; opacity: 0.7; padding: 40px 20px; font-size: 14px; font-style: italic; }
-  .foot-note { font-size: 12px; opacity: 0.6; text-align: center; margin-top: 20px; }
-  .loading { text-align: center; padding: 60px 0; opacity: 0.8; }
 
   .info-card {
     background: var(--panel);
@@ -241,6 +298,10 @@
   .pos { color: #7CD9A0; }
   .neg { color: var(--red-light); }
 
+  .podium-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .podium-row .medal { width: 22px; }
+  .podium-row .elo-small { margin-left: auto; font-family: var(--font-display); font-size: 15px; opacity: 0.9; }
+
   .auth-box {
     background: var(--panel);
     border-radius: 10px;
@@ -259,6 +320,10 @@
     color: #1c1c1c;
   }
 
+  .empty { text-align: center; opacity: 0.7; padding: 40px 20px; font-size: 14px; font-style: italic; }
+  .foot-note { font-size: 12px; opacity: 0.6; text-align: center; margin-top: 20px; }
+  .loading { text-align: center; padding: 60px 0; opacity: 0.8; }
+
   @media (max-width: 480px) {
     h1 { font-size: 40px; }
     .teams { flex-direction: column; }
@@ -269,7 +334,7 @@
 <body>
 <div class="container">
   <header>
-    <div class="eyebrow">TRA AMICI · STAGIONE PERMANENTE</div>
+    <div class="eyebrow" id="season-eyebrow">TRA AMICI</div>
     <h1>CALCETTO</h1>
     <div class="subtitle">classifica ELO del balilla</div>
   </header>
@@ -282,8 +347,7 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
 // ============================================================
-// CONFIGURAZIONE: incolla qui i valori del tuo progetto Supabase
-// (Dashboard > Settings > API)
+// CONFIGURAZIONE
 // ============================================================
 const SUPABASE_URL = "https://gtxeacrydiullkyqanpu.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_G7n7aUW5IhECINFT3T2ybw_JrquwZq7";
@@ -293,6 +357,8 @@ const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ---------- ELO ----------
 const K = 32;
+const HANDICAP = 0.25; // quanto pesa lo sbilanciamento interno della coppia
+const NO_SCORE_BASE = 0.5; // valore di una partita senza punteggio (10-9 ≈ 0.7)
 
 const expectedScore = (ra, rb) => 1 / (1 + Math.pow(10, (rb - ra) / 400));
 
@@ -300,76 +366,30 @@ const expectedScore = (ra, rb) => 1 / (1 + Math.pow(10, (rb - ra) / 400));
 const movMultiplier = (goalDiff, winnerElo, loserElo) =>
   Math.log(goalDiff + 1) * (2.2 / ((winnerElo - loserElo) * 0.001 + 2.2));
 
-// ---------- Stato ----------
-const state = {
-  players: [],
-  matches: [],
-  tab: "classifica",
-  mode: "1v1",
-  teamA: ["", ""],
-  teamB: ["", ""],
-  scoreA: 0,
-  scoreB: 0,
-  busy: false,
-  session: null,
-};
-
-const isAdmin = () => !!state.session;
-
-const TABS = [
-  ["classifica", "Classifica"],
-  ["partita", "Nuova partita"],
-  ["storico", "Storico"],
-  ["rosa", "Giocatori"],
-  ["elo", "ELO"],
-];
-
-const esc = (s) =>
-  String(s).replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-const byId = (id) => state.players.find((p) => p.id === id);
-const nameOf = (id) => byId(id)?.name ?? "?";
-
-// ---------- Dati ----------
-async function loadAll() {
-  const [pRes, mRes] = await Promise.all([
-    sb.from("players").select("*").order("elo", { ascending: false }),
-    sb.from("matches").select("*").order("created_at", { ascending: false }).limit(50),
-  ]);
-  if (pRes.error || mRes.error) {
-    toast("Errore di connessione a Supabase: controlla URL e chiave", false);
-    return;
-  }
-  state.players = pRes.data;
-  state.matches = mRes.data;
+// Rating effettivo di squadra: la media, penalizzata dal divario interno.
+// Una coppia 1300+700 vale meno di una 1000+1000: l'anello debole pesa.
+function teamRating(ids) {
+  if (ids.length === 1) return byId(ids[0]).elo;
+  const [r1, r2] = ids.map((id) => byId(id).elo);
+  return (r1 + r2) / 2 - HANDICAP * Math.abs(r1 - r2);
 }
 
-async function addPlayer(name) {
-  const { error } = await sb.from("players").insert({ name });
-  if (error) {
-    toast(error.code === "23505" ? "Giocatore già presente" : "Errore di salvataggio", false);
-    return false;
-  }
-  toast(`${name} aggiunto alla rosa`);
-  return true;
-}
+// Calcola delta, vincitori e rating pre-partita con i rating CORRENTI.
+// Senza punteggio (scoreA/scoreB null) serve winnerSide ('A' o 'B') e
+// il moltiplicatore è ridotto: meno informazione, delta più prudente.
+function computeMatch(idsA, idsB, scoreA, scoreB, winnerSide) {
+  const size = idsA.length;
+  const ratingA = teamRating(idsA);
+  const ratingB = teamRating(idsB);
+  const noScore = scoreA == null || scoreB == null;
+  const aWins = noScore ? winnerSide === "A" : scoreA > scoreB;
 
-async function recordMatch() {
-  const size = state.mode === "1v1" ? 1 : 2;
-  const idsA = state.teamA.slice(0, size);
-  const idsB = state.teamB.slice(0, size);
-  const { scoreA, scoreB } = state;
+  const winnerElo = aWins ? ratingA : ratingB;
+  const loserElo = aWins ? ratingB : ratingA;
+  const mov = noScore
+    ? NO_SCORE_BASE * (2.2 / ((winnerElo - loserElo) * 0.001 + 2.2))
+    : movMultiplier(Math.abs(scoreA - scoreB), winnerElo, loserElo);
 
-  const ratingA = idsA.reduce((s, id) => s + byId(id).elo, 0) / size;
-  const ratingB = idsB.reduce((s, id) => s + byId(id).elo, 0) / size;
-
-  const aWins = scoreA > scoreB;
-  const mov = movMultiplier(
-    Math.abs(scoreA - scoreB),
-    aWins ? ratingA : ratingB,
-    aWins ? ratingB : ratingA
-  );
   const expA = expectedScore(ratingA, ratingB);
   const totalA = K * mov * ((aWins ? 1 : 0) - expA) * size;
 
@@ -390,61 +410,234 @@ async function recordMatch() {
   const pre = {};
   [...idsA, ...idsB].forEach((id) => (pre[id] = byId(id).elo));
 
-  // aggiorna giocatori + inserisci partita
-  const updates = [...idsA, ...idsB].map((id) => {
+  return { deltas, winners, pre };
+}
+
+// ---------- Stato ----------
+const state = {
+  players: [],
+  matches: [],       // confermate, stagione corrente
+  pending: [],       // in attesa, stagione corrente
+  seasons: [],
+  season: null,      // stagione attiva
+  results: {},       // season_id -> righe season_results ordinate per rank
+  tab: "classifica",
+  mode: "1v1",
+  noScore: false,
+  winnerSide: null,
+  teamA: ["", ""],
+  teamB: ["", ""],
+  scoreA: 0,
+  scoreB: 0,
+  busy: false,
+  session: null,
+};
+
+const isAdmin = () => !!state.session;
+
+const TABS = [
+  ["classifica", "Classifica"],
+  ["partita", "Partita"],
+  ["storico", "Storico"],
+  ["stagioni", "Stagioni"],
+  ["rosa", "Giocatori"],
+  ["elo", "ELO"],
+];
+
+const esc = (s) =>
+  String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const byId = (id) => state.players.find((p) => p.id === id);
+const nameOf = (id) => byId(id)?.name ?? "?";
+const fmtDate = (iso, withTime = true) =>
+  new Date(iso).toLocaleDateString("it-IT", {
+    day: "numeric", month: "short",
+    ...(withTime ? { hour: "2-digit", minute: "2-digit" } : { year: "numeric" }),
+  });
+
+// ---------- Dati ----------
+async function loadAll() {
+  const [pRes, sRes, rRes] = await Promise.all([
+    sb.from("players").select("*").order("elo", { ascending: false }),
+    sb.from("seasons").select("*").order("created_at", { ascending: false }),
+    sb.from("season_results").select("*").order("rank", { ascending: true }),
+  ]);
+  if (pRes.error || sRes.error || rRes.error) {
+    toast("Errore di connessione: controlla configurazione e script SQL", false);
+    return;
+  }
+  state.players = pRes.data;
+  state.seasons = sRes.data;
+  state.season = sRes.data.find((s) => s.active) ?? null;
+
+  state.results = {};
+  for (const r of rRes.data) {
+    (state.results[r.season_id] ??= []).push(r);
+  }
+
+  if (!state.season) {
+    state.matches = [];
+    state.pending = [];
+    return;
+  }
+
+  const [cRes, pendRes] = await Promise.all([
+    sb.from("matches").select("*")
+      .eq("season_id", state.season.id).eq("status", "confirmed")
+      .order("confirmed_at", { ascending: false }).limit(50),
+    sb.from("matches").select("*")
+      .eq("season_id", state.season.id).eq("status", "pending")
+      .order("created_at", { ascending: true }),
+  ]);
+  if (cRes.error || pendRes.error) {
+    toast("Errore nel caricamento delle partite", false);
+    return;
+  }
+  state.matches = cRes.data;
+  state.pending = pendRes.data;
+}
+
+async function addPlayer(name) {
+  const { error } = await sb.from("players").insert({ name });
+  if (error) {
+    toast(error.code === "23505" ? "Giocatore già presente" : "Errore di salvataggio", false);
+    return false;
+  }
+  toast(`${name} aggiunto alla rosa`);
+  return true;
+}
+
+async function applyDeltas(deltas, winners, sign = 1) {
+  const updates = Object.keys(deltas).map((id) => {
     const p = byId(id);
+    if (!p) return Promise.resolve({});
     const won = winners.includes(id);
     return sb.from("players").update({
-      elo: p.elo + deltas[id],
-      wins: p.wins + (won ? 1 : 0),
-      losses: p.losses + (won ? 0 : 1),
+      elo: p.elo + sign * deltas[id],
+      wins: p.wins + sign * (won ? 1 : 0),
+      losses: p.losses + sign * (won ? 0 : 1),
     }).eq("id", id);
   });
-
   const results = await Promise.all(updates);
-  const ins = await sb.from("matches").insert({
+  return !results.some((r) => r.error);
+}
+
+async function recordMatch() {
+  const size = state.mode === "1v1" ? 1 : 2;
+  const idsA = state.teamA.slice(0, size);
+  const idsB = state.teamB.slice(0, size);
+  const noScore = state.noScore;
+  const base = {
     mode: state.mode,
     team_a: idsA, team_b: idsB,
-    score_a: scoreA, score_b: scoreB,
-    deltas, pre, winners,
-  });
+    score_a: noScore ? null : state.scoreA,
+    score_b: noScore ? null : state.scoreB,
+    winner_side: noScore ? state.winnerSide : null,
+    season_id: state.season.id,
+  };
 
-  if (results.some((r) => r.error) || ins.error) {
-    toast("Errore di salvataggio, ricarica la pagina", false);
-    return;
+  if (isAdmin()) {
+    const { deltas, winners, pre } = computeMatch(
+      idsA, idsB, base.score_a, base.score_b, base.winner_side
+    );
+    const ok = await applyDeltas(deltas, winners);
+    const ins = await sb.from("matches").insert({
+      ...base, deltas, pre, winners,
+      status: "confirmed",
+      confirmed_at: new Date().toISOString(),
+    });
+    if (!ok || ins.error) { toast("Errore di salvataggio, ricarica la pagina", false); return; }
+    toast("Partita registrata");
+    state.tab = "classifica";
+  } else {
+    const ins = await sb.from("matches").insert({ ...base, status: "pending" });
+    if (ins.error) { toast("Errore di invio, riprova", false); return; }
+    toast("Partita inviata: conterà dopo la conferma di un admin");
+    state.tab = "storico";
   }
 
   state.teamA = ["", ""];
   state.teamB = ["", ""];
   state.scoreA = 0;
   state.scoreB = 0;
-  state.tab = "classifica";
-  toast("Partita registrata");
+  state.winnerSide = null;
+}
+
+async function confirmMatch(id) {
+  const m = state.pending.find((x) => x.id === id);
+  if (!m) return;
+  const players = [...m.team_a, ...m.team_b];
+  if (players.some((pid) => !byId(pid))) {
+    toast("Giocatore non trovato, impossibile confermare", false);
+    return;
+  }
+  const { deltas, winners, pre } = computeMatch(
+    m.team_a, m.team_b, m.score_a, m.score_b, m.winner_side
+  );
+  const ok = await applyDeltas(deltas, winners);
+  const upd = await sb.from("matches").update({
+    deltas, pre, winners,
+    status: "confirmed",
+    confirmed_at: new Date().toISOString(),
+  }).eq("id", id);
+  if (!ok || upd.error) { toast("Errore nella conferma, ricarica la pagina", false); return; }
+  toast("Partita confermata");
+}
+
+async function rejectMatch(id) {
+  const del = await sb.from("matches").delete().eq("id", id);
+  if (del.error) { toast("Errore, riprova", false); return; }
+  toast("Partita rifiutata");
 }
 
 async function undoLast() {
   const last = state.matches[0];
   if (!last) return;
-
-  const updates = Object.keys(last.pre).map((id) => {
-    const p = byId(id);
-    if (!p) return Promise.resolve({});
-    const won = last.winners.includes(id);
-    return sb.from("players").update({
-      elo: last.pre[id],
-      wins: p.wins - (won ? 1 : 0),
-      losses: p.losses - (won ? 0 : 1),
-    }).eq("id", id);
-  });
-
-  const results = await Promise.all(updates);
+  const ok = await applyDeltas(last.deltas, last.winners, -1);
+  // -1 riporta wins/losses indietro ma l'ELO va rimesso ai valori pre-partita
+  // esatti per assorbire gli arrotondamenti: usa 'pre'
+  const fix = Object.keys(last.pre).map((id) =>
+    byId(id) ? sb.from("players").update({ elo: last.pre[id] }).eq("id", id) : Promise.resolve({})
+  );
+  const fixRes = await Promise.all(fix);
   const del = await sb.from("matches").delete().eq("id", last.id);
-
-  if (results.some((r) => r.error) || del.error) {
+  if (!ok || fixRes.some((r) => r.error) || del.error) {
     toast("Errore, ricarica la pagina", false);
     return;
   }
   toast("Ultima partita annullata");
+}
+
+async function closeSeason(newName) {
+  const ranked = [...state.players].sort((a, b) => b.elo - a.elo);
+  const rows = ranked.map((p, i) => ({
+    season_id: state.season.id,
+    player_id: p.id,
+    name: p.name,
+    elo: p.elo,
+    wins: p.wins,
+    losses: p.losses,
+    rank: i + 1,
+  }));
+
+  const r1 = await sb.from("season_results").insert(rows);
+  if (r1.error) { toast("Errore nello snapshot della stagione", false); return; }
+
+  const r2 = await sb.from("seasons")
+    .update({ active: false, ended_at: new Date().toISOString() })
+    .eq("id", state.season.id);
+  const r3 = await sb.from("seasons").insert({ name: newName });
+  const r4 = await sb.from("players")
+    .update({ elo: 1000, wins: 0, losses: 0 })
+    .gte("wins", 0);
+
+  if (r2.error || r3.error || r4.error) {
+    toast("Errore nella chiusura, controlla il pannello Supabase", false);
+    return;
+  }
+  toast(`Stagione chiusa. Benvenuta "${newName}"!`);
+  state.tab = "stagioni";
 }
 
 // ---------- UI ----------
@@ -453,21 +646,79 @@ function toast(text, ok = true) {
   const el = document.getElementById("toast");
   el.innerHTML = `<div class="toast ${ok ? "ok" : "err"}">${esc(text)}</div>`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.innerHTML = ""), 3000);
+  toastTimer = setTimeout(() => (el.innerHTML = ""), 3500);
 }
 
 function renderNav() {
-  document.getElementById("nav").innerHTML = TABS.map(
-    ([key, label]) =>
-      `<button data-tab="${key}" class="${state.tab === key ? "active" : ""}">${label}</button>`
-  ).join("");
+  document.getElementById("nav").innerHTML = TABS.map(([key, label]) => {
+    const badge = key === "storico" && state.pending.length && isAdmin()
+      ? `<span class="badge">${state.pending.length}</span>` : "";
+    return `<button data-tab="${key}" class="${state.tab === key ? "active" : ""}">${label}${badge}</button>`;
+  }).join("");
+  document.getElementById("season-eyebrow").textContent =
+    state.season ? state.season.name.toUpperCase() : "TRA AMICI";
+}
+
+// forma recente: array di booleani (vinta?) dalla più recente
+function formOf(pid) {
+  return state.matches
+    .filter((m) => m.team_a.includes(pid) || m.team_b.includes(pid))
+    .slice(0, 5)
+    .map((m) => m.winners.includes(pid));
+}
+
+function streakOf(form) {
+  if (form.length < 2) return "";
+  let n = 1;
+  while (n < form.length && form[n] === form[0]) n++;
+  if (n < 2) return "";
+  return `<span class="streak">${n}${form[0] ? "V" : "S"} di fila</span>`;
+}
+
+function matchRowHTML(m, { pending = false, actions = false } = {}) {
+  const noScore = m.score_a == null || m.score_b == null;
+  const aWon = noScore ? m.winner_side === "A" : m.score_a > m.score_b;
+  const deltaStr = !pending && m.deltas
+    ? [...m.team_a, ...m.team_b]
+        .map((id) => `${esc(nameOf(id))} ${m.deltas[id] >= 0 ? "+" : ""}${m.deltas[id]}`)
+        .join(" · ")
+    : "in attesa di conferma";
+  const btns = actions
+    ? `<div class="confirm-actions">
+        <button class="btn-confirm" data-confirm="${m.id}">Conferma</button>
+        <button class="btn-reject" data-reject="${m.id}">Rifiuta</button>
+      </div>` : "";
+  const scoreHTML = noScore
+    ? `<span class="${aWon ? "win" : ""}">${aWon ? "V" : "S"}</span>
+       <span style="opacity:0.5"> – </span>
+       <span class="${!aWon ? "win" : ""}">${!aWon ? "V" : "S"}</span>`
+    : `<span class="${aWon ? "win" : ""}">${m.score_a}</span>
+       <span style="opacity:0.5"> – </span>
+       <span class="${!aWon ? "win" : ""}">${m.score_b}</span>`;
+  return `<div class="match-row ${pending ? "pending" : ""}">
+    <div style="flex:1">
+      <span class="team-a">${m.team_a.map((id) => esc(nameOf(id))).join(" + ")}</span>
+      <span style="opacity:0.7"> vs </span>
+      <span class="team-b">${m.team_b.map((id) => esc(nameOf(id))).join(" + ")}</span>
+      <div class="meta">${fmtDate(m.created_at)} · ${m.mode}${noScore ? " · senza punteggio" : ""}</div>
+      <div class="meta">${deltaStr}</div>
+      ${btns}
+    </div>
+    <div class="match-score">${scoreHTML}</div>
+  </div>`;
 }
 
 function render() {
   renderNav();
   const app = document.getElementById("app");
-  const { players, matches, tab } = state;
+  const { players, matches, pending, tab } = state;
 
+  if (!state.season && tab !== "elo") {
+    app.innerHTML = `<div class="empty">Nessuna stagione attiva. Esegui lo script SQL di setup oppure crea una stagione dal pannello Supabase.</div>`;
+    return;
+  }
+
+  // ---------- CLASSIFICA ----------
   if (tab === "classifica") {
     if (players.length === 0) {
       app.innerHTML = `<div class="empty">Nessun giocatore in rosa. Aggiungi i primi nella scheda Giocatori.</div>`;
@@ -477,11 +728,15 @@ function render() {
     app.innerHTML = ranked.map((p, i) => {
       const tot = p.wins + p.losses;
       const pct = tot ? Math.round((p.wins / tot) * 100) : 0;
+      const form = formOf(p.id);
+      const dots = form.map((w) => `<span class="dot ${w ? "w" : "l"}"></span>`).join("");
+      const streak = streakOf(form);
       return `<div class="row ${i === 0 ? "first" : ""}">
         <div class="rank ${i === 0 ? "gold" : ""}">${i + 1}</div>
         <div style="flex:1">
           <div class="player-name">${esc(p.name)}</div>
-          <div class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}%` : ""}</div>
+          <div class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}%` : ""}${streak ? " · " + streak : ""}</div>
+          ${form.length ? `<div style="margin-top:4px">${dots}</div>` : ""}
         </div>
         <div class="elo">${p.elo}</div>
       </div>`;
@@ -489,23 +744,20 @@ function render() {
     return;
   }
 
+  // ---------- PARTITA ----------
   if (tab === "partita") {
-    if (!isAdmin()) {
-      app.innerHTML = `<div class="empty">Solo un admin può registrare le partite.<br>Accedi dalla scheda Giocatori.</div>`;
-      return;
-    }
     if (players.length < 2) {
       app.innerHTML = `<div class="empty">Servono almeno 2 giocatori in rosa.</div>`;
       return;
     }
     const size = state.mode === "1v1" ? 1 : 2;
     const selected = [...state.teamA.slice(0, size), ...state.teamB.slice(0, size)].filter(Boolean);
-    const valid =
-      selected.length === size * 2 &&
-      new Set(selected).size === size * 2 &&
-      state.scoreA !== state.scoreB;
+    const playersOk =
+      selected.length === size * 2 && new Set(selected).size === size * 2;
+    const valid = playersOk &&
+      (state.noScore ? !!state.winnerSide : state.scoreA !== state.scoreB);
 
-    const teamCard = (team, cls, label, score, scoreKey) => {
+    const teamCard = (team, cls, label, score, side) => {
       const taken = new Set([...state.teamA, ...state.teamB].filter(Boolean));
       const selects = Array.from({ length: size }).map((_, i) => {
         const opts = players.map((p) => {
@@ -517,26 +769,41 @@ function render() {
           <option value="">— giocatore —</option>${opts}
         </select>`;
       }).join("");
+      const resultCtrl = state.noScore
+        ? `<button class="win-btn ${state.winnerSide === side ? "active" : ""}" data-winner="${side}">
+            ${state.winnerSide === side ? "🏆 VITTORIA" : "Vittoria"}
+          </button>`
+        : `<div class="score-ctrl">
+            <button data-score="${side}" data-dir="-1">−</button>
+            <div class="score-num">${score}</div>
+            <button data-score="${side}" data-dir="1">+</button>
+          </div>`;
       return `<div class="team-card ${cls}">
         <div class="team-label">${label}</div>
         ${selects}
-        <div class="score-ctrl">
-          <button data-score="${scoreKey}" data-dir="-1">−</button>
-          <div class="score-num">${score}</div>
-          <button data-score="${scoreKey}" data-dir="1">+</button>
-        </div>
+        ${resultCtrl}
       </div>`;
     };
 
-    const hint =
-      state.scoreA === state.scoreB && selected.length === size * 2
-        ? "Il pareggio non esiste al balilla: si gioca la palla decisiva."
-        : "Il divario di gol pesa sul delta: un 10-0 vale molto più di un 10-9.";
+    let hint;
+    if (state.noScore) {
+      hint = "Senza punteggio la partita vale circa la metà di una vittoria di misura.";
+    } else if (state.scoreA === state.scoreB && playersOk) {
+      hint = "Il pareggio non esiste al balilla: si gioca la palla decisiva.";
+    } else if (isAdmin()) {
+      hint = "Il divario di gol pesa sul delta: un 10-0 vale molto più di un 10-9.";
+    } else {
+      hint = "La partita verrà conteggiata dopo la conferma di un admin.";
+    }
 
     app.innerHTML = `
       <div class="mode-row">
         <button data-mode="1v1" class="${state.mode === "1v1" ? "active" : ""}">1v1</button>
         <button data-mode="2v2" class="${state.mode === "2v2" ? "active" : ""}">2v2</button>
+      </div>
+      <div class="mode-row" style="margin-top:-10px">
+        <button data-scoremode="score" class="${!state.noScore ? "active" : ""}" style="font-size:12px">Con punteggio</button>
+        <button data-scoremode="noscore" class="${state.noScore ? "active" : ""}" style="font-size:12px">Solo chi ha vinto</button>
       </div>
       <div class="teams">
         ${teamCard(state.teamA, "red", "ROSSI", state.scoreA, "A")}
@@ -544,52 +811,87 @@ function render() {
         ${teamCard(state.teamB, "blue", "BLU", state.scoreB, "B")}
       </div>
       <div class="hint">${hint}</div>
-      <button class="cta" id="save-match" ${valid && !state.busy ? "" : "disabled"}>Registra partita</button>`;
+      <button class="cta" id="save-match" ${valid && !state.busy ? "" : "disabled"}>
+        ${isAdmin() ? "Registra partita" : "Invia partita"}
+      </button>`;
     return;
   }
 
+  // ---------- STORICO ----------
   if (tab === "storico") {
-    if (matches.length === 0) {
-      app.innerHTML = `<div class="empty">Nessuna partita registrata.</div>`;
+    if (matches.length === 0 && pending.length === 0) {
+      app.innerHTML = `<div class="empty">Nessuna partita in questa stagione.</div>`;
       return;
     }
-    const rows = matches.map((m) => {
-      const aWon = m.score_a > m.score_b;
-      const deltaStr = [...m.team_a, ...m.team_b]
-        .map((id) => {
-          const d = m.deltas[id];
-          return `${esc(nameOf(id))} ${d >= 0 ? "+" : ""}${d}`;
-        }).join(" · ");
-      const date = new Date(m.created_at).toLocaleDateString("it-IT", {
-        day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
-      });
-      return `<div class="match-row">
-        <div style="flex:1">
-          <span class="team-a">${m.team_a.map((id) => esc(nameOf(id))).join(" + ")}</span>
-          <span style="opacity:0.7"> vs </span>
-          <span class="team-b">${m.team_b.map((id) => esc(nameOf(id))).join(" + ")}</span>
-          <div class="meta">${date} · ${m.mode}</div>
-          <div class="meta">${deltaStr}</div>
-        </div>
-        <div class="match-score">
-          <span class="${aWon ? "win" : ""}">${m.score_a}</span>
-          <span style="opacity:0.5"> – </span>
-          <span class="${!aWon ? "win" : ""}">${m.score_b}</span>
-        </div>
-      </div>`;
-    }).join("");
-    const undoBtn = isAdmin()
-      ? `<button class="undo" id="undo">Annulla ultima partita</button>`
-      : "";
-    app.innerHTML = `${undoBtn}${rows}`;
+    let html = "";
+    if (pending.length) {
+      html += `<div class="section-label">DA CONFERMARE (${pending.length})</div>`;
+      html += pending.map((m) => matchRowHTML(m, { pending: true, actions: isAdmin() })).join("");
+    }
+    if (matches.length) {
+      html += `<div class="section-label">PARTITE</div>`;
+      if (isAdmin()) html += `<button class="undo" id="undo">Annulla ultima partita</button>`;
+      html += matches.map((m) => matchRowHTML(m)).join("");
+    }
+    app.innerHTML = html;
     return;
   }
 
+  // ---------- STAGIONI ----------
+  if (tab === "stagioni") {
+    const ranked = [...players].sort((a, b) => b.elo - a.elo);
+    const leader = ranked[0];
+    let html = `
+      <div class="info-card">
+        <h3>${esc(state.season.name).toUpperCase()} · IN CORSO</h3>
+        <p class="meta" style="margin-bottom:8px">dal ${fmtDate(state.season.created_at, false)}</p>
+        ${leader ? `<p>In testa: <b>${esc(leader.name)}</b> (${leader.elo})</p>` : "<p>Nessun giocatore.</p>"}
+      </div>`;
+
+    if (isAdmin()) {
+      html += `
+        <div class="auth-box" style="margin-top:10px">
+          <div class="meta" style="margin-bottom:4px">Chiudi la stagione: la classifica viene archiviata e tutti ripartono da 1000.</div>
+          <input id="new-season-name" placeholder="Nome nuova stagione" maxlength="40">
+          <button class="cta" id="close-season" style="font-size:14px;padding:11px 0">Chiudi stagione e avviane una nuova</button>
+        </div>`;
+    }
+
+    const past = state.seasons.filter((s) => !s.active);
+    if (past.length) {
+      html += `<div class="section-label" style="margin-top:22px">ALBO D'ORO</div>`;
+      html += past.map((s) => {
+        const res = state.results[s.id] ?? [];
+        const medals = ["🥇", "🥈", "🥉"];
+        const podium = res.slice(0, 3).map((r, i) =>
+          `<div class="podium-row">
+            <span class="medal">${medals[i]}</span>
+            <span class="player-name" style="font-size:15px">${esc(r.name)}</span>
+            <span class="meta" style="margin-top:0">${r.wins}V–${r.losses}S</span>
+            <span class="elo-small">${r.elo}</span>
+          </div>`
+        ).join("");
+        const others = res.length > 3 ? `<div class="meta" style="margin-top:6px">e altri ${res.length - 3} giocatori</div>` : "";
+        const dates = `${fmtDate(s.created_at, false)} → ${s.ended_at ? fmtDate(s.ended_at, false) : "?"}`;
+        return `<div class="info-card">
+          <h3>${esc(s.name).toUpperCase()}</h3>
+          <p class="meta" style="margin-bottom:10px">${dates}</p>
+          ${podium || `<p class="meta">Nessun risultato archiviato.</p>`}
+          ${others}
+        </div>`;
+      }).join("");
+    }
+    app.innerHTML = html;
+    return;
+  }
+
+  // ---------- ELO ----------
   if (tab === "elo") {
     app.innerHTML = `
       <div class="info-card">
         <h3>LE BASI</h3>
         <p>Tutti partono da <b>1000 punti</b>. Dopo ogni partita il vincitore prende punti e il perdente li perde: quello che guadagna una squadra è esattamente quello che perde l'altra. Il rating non misura quante partite hai vinto, ma <b>quanto sei forte rispetto agli altri</b>.</p>
+        <p>Le partite proposte dai giocatori entrano in classifica solo dopo la <b>conferma di un admin</b>, e i punti si calcolano con i rating al momento della conferma.</p>
       </div>
 
       <div class="info-card">
@@ -601,25 +903,33 @@ function render() {
         <p><b>2. Il punteggio.</b> Il delta viene moltiplicato per un fattore che cresce col divario di gol:</p>
         <div class="formula">mov = ln(diffGol + 1) × 2.2 / (diffElo × 0.001 + 2.2)</div>
         <p>Un 10-9 vale circa <b>0.7×</b> il valore base, un 10-0 circa <b>2.4×</b>. La seconda parte della formula smorza i cappotti del favorito e amplifica quelli dello sfavorito, così i più forti non gonfiano il rating massacrando gli ultimi.</p>
+        <p>Se il punteggio non ve lo ricordate, si può registrare solo chi ha vinto: la partita vale <b>0.5×</b>, meno di una vittoria di misura, perché senza il punteggio il sistema ha meno informazione ed è prudente.</p>
         <p><b>3. Il tuo compagno</b> (solo 2v2, vedi sotto).</p>
       </div>
 
       <div class="info-card">
-        <h3>IL 2v2 E IL COMPAGNO</h3>
-        <p>Il rating di squadra è la <b>media</b> dei due giocatori, e con quello si calcolano attesa e delta totale. Poi il bottino viene diviso in modo inversamente proporzionale al rating:</p>
-        <p>Se vinci, <b>il più debole della coppia prende la fetta più grande</b>: ha sovraperformato il suo rating. Se perdete, <b>il più forte perde di più</b>: da lui ci si aspettava che trascinasse la squadra.</p>
+        <h3>IL 2v2, IL COMPAGNO E LA COPPIA SBILANCIATA</h3>
+        <p>Il rating di squadra parte dalla <b>media</b> dei due giocatori, ma una coppia sbilanciata vale meno della sua media: al balilla l'anello debole pesa più di quanto il forte possa compensare. Quindi:</p>
+        <div class="formula">ratingSquadra = media − 0.25 × |elo1 − elo2|</div>
+        <p>Una coppia 1300+700 non vale 1000 ma <b>850</b>: parte sfavorita contro due da 1000. Questo protegge il giocatore forte con un compagno molto scarso: se perdete, la sconfitta era già messa in conto e i punti persi sono pochi. Se vincete, valgono di più.</p>
+        <p>Il bottino viene poi diviso in base ai rating individuali: se vinci, <b>il più debole della coppia prende la fetta più grande</b> (ha sovraperformato). Se perdete, <b>il più forte perde di più</b>, ma su un totale già ridotto dallo sbilanciamento.</p>
       </div>
 
       <div class="info-card">
         <h3>ESEMPIO CONCRETO</h3>
-        <p>Marco (1100) e Luca (900) battono 10-3 una coppia da 1000 e 1000. Le medie sono pari, quindi attesa 50%. Il moltiplicatore per il 10-3 è ln(8) ≈ 2.1, e il montepremi totale è circa 67 punti:</p>
+        <p>Marco (1100) e Luca (900) battono 10-3 una coppia da 1000 e 1000. La media sarebbe pari, ma con la correzione la coppia vale 950 e parte sfavorita (43%). Vittoria larga da sfavoriti: montepremi di circa 78 punti.</p>
         <table class="example-table">
-          <tr><td>Luca (900, il più debole)</td><td class="pos">+37</td></tr>
-          <tr><td>Marco (1100, il più forte)</td><td class="pos">+30</td></tr>
-          <tr><td>Avversario 1 (1000)</td><td class="neg">−33</td></tr>
-          <tr><td>Avversario 2 (1000)</td><td class="neg">−33</td></tr>
+          <tr><td>Luca (900, il più debole)</td><td class="pos">+43</td></tr>
+          <tr><td>Marco (1100, il più forte)</td><td class="pos">+35</td></tr>
+          <tr><td>Avversario 1 (1000)</td><td class="neg">−39</td></tr>
+          <tr><td>Avversario 2 (1000)</td><td class="neg">−39</td></tr>
         </table>
-        <p style="margin-top:8px">Se la stessa partita fosse finita 10-9, il montepremi sarebbe stato di circa 22 punti.</p>
+        <p style="margin-top:8px">Stessa partita finita 10-9: montepremi di circa 26 punti. E se Marco e Luca avessero perso, avrebbero pagato poco: partivano sfavoriti.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>LE STAGIONI</h3>
+        <p>Quando l'admin chiude una stagione, la classifica finale viene <b>archiviata nell'albo d'oro</b> e tutti ripartono da 1000. Ogni stagione è un campionato a sé: vincere la stagione conta più del rating assoluto.</p>
       </div>
 
       <div class="info-card">
@@ -629,6 +939,7 @@ function render() {
     return;
   }
 
+  // ---------- GIOCATORI ----------
   if (tab === "rosa") {
     const rows = players.map((p) =>
       `<div class="row">
@@ -660,17 +971,27 @@ function render() {
       ${addForm}
       ${rows || `<div class="empty">Nessun giocatore in rosa.</div>`}
       ${authBox}
-      <div class="foot-note">La classifica è pubblica in lettura; solo gli admin possono registrare partite e giocatori.</div>`;
+      <div class="foot-note">Chiunque può vedere tutto e proporre partite; solo gli admin confermano, gestiscono la rosa e le stagioni.</div>`;
   }
 }
 
-// ---------- Eventi (delegation) ----------
+// ---------- Eventi ----------
+async function withBusy(fn) {
+  if (state.busy) return;
+  state.busy = true;
+  render();
+  await fn();
+  await loadAll();
+  state.busy = false;
+  render();
+}
+
 document.addEventListener("click", async (e) => {
   const t = e.target;
 
   if (t.dataset.tab) {
     state.tab = t.dataset.tab;
-    await loadAll(); // refresh a ogni cambio scheda: vedi le partite degli altri
+    await loadAll();
     render();
     return;
   }
@@ -681,51 +1002,53 @@ document.addEventListener("click", async (e) => {
     render();
     return;
   }
+  if (t.dataset.scoremode) {
+    state.noScore = t.dataset.scoremode === "noscore";
+    state.winnerSide = null;
+    render();
+    return;
+  }
+  if (t.dataset.winner) {
+    state.winnerSide = t.dataset.winner;
+    render();
+    return;
+  }
   if (t.dataset.score) {
     const key = t.dataset.score === "A" ? "scoreA" : "scoreB";
     state[key] = Math.max(0, state[key] + Number(t.dataset.dir));
     render();
     return;
   }
-  if (t.id === "save-match" && !state.busy) {
-    state.busy = true;
-    render();
-    await recordMatch();
-    await loadAll();
-    state.busy = false;
-    render();
-    return;
+  if (t.id === "save-match") return withBusy(recordMatch);
+  if (t.dataset.confirm) return withBusy(() => confirmMatch(t.dataset.confirm));
+  if (t.dataset.reject) {
+    if (!confirm("Rifiutare questa partita? Verrà eliminata.")) return;
+    return withBusy(() => rejectMatch(t.dataset.reject));
   }
-  if (t.id === "undo" && !state.busy) {
-    if (!confirm("Annullare l'ultima partita registrata?")) return;
-    state.busy = true;
-    await undoLast();
-    await loadAll();
-    state.busy = false;
-    render();
-    return;
+  if (t.id === "undo") {
+    if (!confirm("Annullare l'ultima partita confermata?")) return;
+    return withBusy(undoLast);
+  }
+  if (t.id === "close-season") {
+    const name = document.getElementById("new-season-name").value.trim();
+    if (!name) { toast("Dai un nome alla nuova stagione", false); return; }
+    const warn = state.pending.length
+      ? `\n\nAttenzione: ci sono ${state.pending.length} partite in attesa che resteranno non conteggiate.` : "";
+    if (!confirm(`Chiudere "${state.season.name}" e iniziare "${name}"?\nLa classifica verrà archiviata e tutti ripartiranno da 1000.${warn}`)) return;
+    return withBusy(() => closeSeason(name));
   }
   if (t.id === "add-player") {
-    const input = document.getElementById("new-name");
-    const name = input.value.trim();
+    const name = document.getElementById("new-name").value.trim();
     if (!name) return;
-    if (await addPlayer(name)) {
-      await loadAll();
-      render();
-    }
-    return;
+    return withBusy(() => addPlayer(name));
   }
   if (t.id === "login") {
     const email = document.getElementById("login-email").value.trim();
     const password = document.getElementById("login-pass").value;
     if (!email || !password) return;
     const { error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) {
-      toast("Credenziali non valide", false);
-      return;
-    }
+    if (error) { toast("Credenziali non valide", false); return; }
     toast("Accesso effettuato");
-    // state.session viene aggiornato da onAuthStateChange
     return;
   }
   if (t.id === "logout") {
@@ -745,12 +1068,10 @@ document.addEventListener("change", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && e.target.id === "new-name") {
-    document.getElementById("add-player")?.click();
-  }
-  if (e.key === "Enter" && (e.target.id === "login-email" || e.target.id === "login-pass")) {
-    document.getElementById("login")?.click();
-  }
+  if (e.key !== "Enter") return;
+  if (e.target.id === "new-name") document.getElementById("add-player")?.click();
+  if (e.target.id === "login-email" || e.target.id === "login-pass") document.getElementById("login")?.click();
+  if (e.target.id === "new-season-name") document.getElementById("close-season")?.click();
 });
 
 // ---------- Avvio ----------
