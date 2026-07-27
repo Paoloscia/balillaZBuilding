@@ -273,15 +273,6 @@
     cursor: pointer;
     line-height: 1;
   }
-  .edit-btn {
-    border: none;
-    background: rgba(255,255,255,0.08);
-    border-radius: 7px;
-    padding: 6px 9px;
-    font-size: 14px;
-    cursor: pointer;
-    line-height: 1;
-  }
 
   .info-card {
     background: var(--panel);
@@ -535,15 +526,6 @@ async function renamePlayer(id, newName) {
   // aggiorna anche l'albo d'oro delle stagioni passate
   await sb.from("season_results").update({ name: newName }).eq("player_id", id);
   toast("Nome aggiornato");
-}
-
-async function renamePlayer(id, newName) {
-  const { error } = await sb.from("players").update({ name: newName }).eq("id", id);
-  if (error) {
-    toast(error.code === "23505" ? "Esiste già un giocatore con questo nome" : "Errore di salvataggio", false);
-    return;
-  }
-  toast(`Rinominato in ${newName}`);
 }
 
 async function applyDeltas(deltas, winners, sign = 1) {
@@ -1075,13 +1057,6 @@ document.addEventListener("click", async (e) => {
       ? `\n\nAttenzione: ci sono ${state.pending.length} partite in attesa che resteranno non conteggiate.` : "";
     if (!confirm(`Chiudere "${state.season.name}" e iniziare "${name}"?\nLa classifica verrà archiviata e tutti ripartiranno da 1000.${warn}`)) return;
     return withBusy(() => closeSeason(name));
-  }
-  if (t.dataset.rename) {
-    const p = byId(t.dataset.rename);
-    if (!p) return;
-    const newName = prompt("Nuovo nome per il giocatore:", p.name)?.trim();
-    if (!newName || newName === p.name) return;
-    return withBusy(() => renamePlayer(p.id, newName));
   }
   if (t.dataset.rename) {
     const p = byId(t.dataset.rename);
