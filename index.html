@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Calcetto · Classifica ELO</title>
+<meta name="theme-color" content="#0E3D28">
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<link rel="icon" type="image/png" href="./icon-192.png">
 <style>
   :root {
     --felt: #17563A;
@@ -385,6 +389,23 @@
     font-weight: 700;
     cursor: pointer;
   }
+  .forecast {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    text-align: center;
+    font-size: 14px;
+  }
+  .chip {
+    display: inline-block;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 5px 10px;
+    font-size: 12px;
+    margin: 0 6px 6px 0;
+  }
 
   .auth-box {
     background: var(--panel);
@@ -545,6 +566,8 @@ const state = {
   historySeason: "all",
   tPairs: [["", ""], ["", ""]],
   tName: "",
+  tFormat: "elim",
+  profileId: null,
   mode: "1v1",
   noScore: false,
   winnerSide: null,
@@ -831,10 +854,19 @@ async function createTournament() {
   // teste di serie: coppie ordinate per rating
   const sorted = [...pairs].sort((x, y) => pairRating(y) - pairRating(x));
   const teams = sorted.map(([p1, p2]) => ({ p1, p2 }));
-  const bracket = buildBracket(teams.length);
+  let bracket;
+  if (state.tFormat === "girone") {
+    const fixtures = [];
+    for (let i = 0; i < teams.length; i++)
+      for (let j = i + 1; j < teams.length; j++)
+        fixtures.push({ a: i, b: j, winner: null, score: null });
+    bracket = [fixtures];
+  } else {
+    bracket = buildBracket(teams.length);
+  }
 
   const { error } = await sb.from("tournaments").insert({
-    name, season_id: season.id, teams, bracket,
+    name, season_id: season.id, teams, bracket, format: state.tFormat,
   });
   if (error) { toast("Errore nella creazione del torneo", false); return; }
   state.tName = "";
@@ -865,19 +897,68 @@ async function recordTournamentMatch(tid, r, i, sa, sbv) {
 
   m.winner = sa > sbv ? m.a : m.b;
   m.score = [sa, sbv];
-  advance(bracket, r, i, m.winner);
-  const finale = bracket[bracket.length - 1][0];
-  const status = finale.winner != null ? "done" : "open";
+  const fmt = t.format ?? "elim";
+  let status = "open";
+  if (fmt === "girone") {
+    if (bracket[0].every((f) => f.winner != null)) status = "done";
+  } else {
+    advance(bracket, r, i, m.winner);
+    if (bracket[bracket.length - 1][0].winner != null) status = "done";
+  }
 
   const upd = await sb.from("tournaments").update({ bracket, status }).eq("id", tid);
   if (upd.error) { toast("Partita salvata ma tabellone non aggiornato: ricarica", false); return; }
-  toast(status === "done"
-    ? `Torneo concluso! Vince ${teamLabel(t, m.winner)} 🏆`
-    : "Risultato registrato");
+  if (status === "done") {
+    const winIdx = fmt === "girone" ? gironeStandings(t)[0].i : m.winner;
+    toast(`Torneo concluso! Vince ${teamLabel(t, winIdx)} 🏆`);
+  } else {
+    toast("Risultato registrato");
+  }
 }
 
 const teamLabel = (t, idx) =>
   idx == null ? "—" : `${nameOf(t.teams[idx].p1)} + ${nameOf(t.teams[idx].p2)}`;
+
+function gironeStandings(t) {
+  const st = t.teams.map((_, i) => ({ i, w: 0, l: 0, gf: 0, gs: 0 }));
+  for (const f of t.bracket[0]) {
+    if (f.winner == null || !f.score) continue;
+    st[f.a].gf += f.score[0]; st[f.a].gs += f.score[1];
+    st[f.b].gf += f.score[1]; st[f.b].gs += f.score[0];
+    if (f.winner === f.a) { st[f.a].w++; st[f.b].l++; } else { st[f.b].w++; st[f.a].l++; }
+  }
+  st.sort((x, y) => y.w - x.w || (y.gf - y.gs) - (x.gf - x.gs) || y.gf - x.gf);
+  return st;
+}
+
+function gironeHTML(t, canRecord) {
+  const st = gironeStandings(t);
+  const fixtures = t.bracket[0];
+  const played = fixtures.filter((f) => f.winner != null).length;
+  let out = `<div class="section-label">CLASSIFICA GIRONE</div>`;
+  out += st.map((row, pos) =>
+    `<div class="b-team ${pos === 0 && played ? "winner" : ""}" style="padding:4px 0">
+      <span style="width:22px;font-family:var(--font-display)">${pos + 1}</span>
+      ${esc(teamLabel(t, row.i))}
+      <span class="b-score" style="font-size:13px">${row.w}V–${row.l}S · ${row.gf - row.gs >= 0 ? "+" : ""}${row.gf - row.gs}</span>
+    </div>`).join("");
+  out += `<div class="section-label">PARTITE (${played}/${fixtures.length})</div>`;
+  fixtures.forEach((m, i) => {
+    const recordUI = canRecord && m.winner == null
+      ? `<div class="b-record">
+          <input class="ts-input" type="number" min="0" id="ts-${t.id}-0-${i}-a" placeholder="0">
+          <span style="opacity:0.6">–</span>
+          <input class="ts-input" type="number" min="0" id="ts-${t.id}-0-${i}-b" placeholder="0">
+          <button data-trecord="${t.id}|0|${i}">OK</button>
+        </div>` : "";
+    out += `<div class="b-match">
+      <div class="b-team ${m.winner === m.a ? "winner" : ""}">${esc(teamLabel(t, m.a))}${m.score ? `<span class="b-score">${m.score[0]}</span>` : ""}</div>
+      <div class="b-team ${m.winner === m.b ? "winner" : ""}">${esc(teamLabel(t, m.b))}${m.score ? `<span class="b-score">${m.score[1]}</span>` : ""}</div>
+      ${recordUI}
+    </div>`;
+  });
+  return out;
+}
 
 // ---------- Partite consigliate (2v2) ----------
 // Solo chi gioca in questo periodo (ultimi 60 giorni). Premia sfide mai
@@ -1018,6 +1099,135 @@ function matchRowHTML(m, { pending = false, actions = false, showSeason = false 
   </div>`;
 }
 
+// ---------- Profilo giocatore ----------
+function profileData(pid) {
+  const ms = state.matches
+    .filter((m) => m.team_a.includes(pid) || m.team_b.includes(pid))
+    .slice().reverse(); // cronologico
+  const curve = [];
+  for (const m of ms) if (m.pre && m.pre[pid] != null) curve.push(m.pre[pid]);
+  const p = byId(pid);
+  if (p) curve.push(p.elo);
+  const vs = {}, mate = {};
+  let bestWin = null, bestStreak = 0, cur = 0;
+  for (const m of ms) {
+    const inA = m.team_a.includes(pid);
+    const won = m.winners.includes(pid);
+    const opps = inA ? m.team_b : m.team_a;
+    const mates = (inA ? m.team_a : m.team_b).filter((x) => x !== pid);
+    for (const o of opps) { (vs[o] ??= { w: 0, l: 0 }); won ? vs[o].w++ : vs[o].l++; }
+    for (const mt of mates) { (mate[mt] ??= { w: 0, l: 0 }); won ? mate[mt].w++ : mate[mt].l++; }
+    if (won) { cur++; bestStreak = Math.max(bestStreak, cur); } else cur = 0;
+    if (won && m.score_a != null) {
+      const diff = Math.abs(m.score_a - m.score_b);
+      if (!bestWin || diff > bestWin.diff) bestWin = { diff, m };
+    }
+  }
+  const pick = (obj, key, min) => {
+    let best = null;
+    for (const id of Object.keys(obj)) {
+      const r = obj[id];
+      if (r.w + r.l < min) continue;
+      const v = key(r);
+      if (!best || v > best.v) best = { id, r, v };
+    }
+    return best;
+  };
+  const nem = pick(vs, (r) => r.l * 2 - r.w, 2);
+  const vit = pick(vs, (r) => r.w * 2 - r.l, 2);
+  return {
+    ms, curve,
+    nemesi: nem && nem.r.l >= 2 ? nem : null,
+    vittima: vit && vit.r.w >= 2 ? vit : null,
+    oro: pick(mate, (r) => r.w / (r.w + r.l), 2),
+    bestWin, bestStreak,
+  };
+}
+
+function badgesOf(pid, d) {
+  const out = [];
+  const cappotti = d.ms.filter((m) => m.winners.includes(pid) && m.score_a != null &&
+    Math.min(m.score_a, m.score_b) === 0 && Math.max(m.score_a, m.score_b) >= 8).length;
+  if (cappotti) out.push({ icon: "🧹", label: `Cappotto ×${cappotti}` });
+  const giganti = d.ms.filter((m) => {
+    if (!m.winners.includes(pid) || !m.pre) return false;
+    const inA = m.team_a.includes(pid);
+    const avg = (ids) => ids.reduce((s, id) => s + (m.pre[id] ?? 1000), 0) / ids.length;
+    return avg(inA ? m.team_b : m.team_a) - avg(inA ? m.team_a : m.team_b) >= 120;
+  }).length;
+  if (giganti) out.push({ icon: "⚔️", label: `Ammazzagiganti ×${giganti}` });
+  if (d.bestStreak >= 5) out.push({ icon: "🔥", label: `Striscia da ${d.bestStreak}V` });
+  let titoli = 0, cucchiai = 0;
+  for (const sid of Object.keys(state.results)) {
+    const res = state.results[sid];
+    const mine = res.find((r) => r.player_id === pid);
+    if (!mine) continue;
+    if (mine.rank === 1) titoli++;
+    if (mine.rank === res.length && res.length > 1) cucchiai++;
+  }
+  if (titoli) out.push({ icon: "👑", label: `Stagioni vinte ×${titoli}` });
+  if (cucchiai) out.push({ icon: "🥄", label: `Cucchiaio di legno ×${cucchiai}` });
+  const tornei = state.tournaments.filter((t) => {
+    if (t.status !== "done") return false;
+    const fmt = t.format ?? "elim";
+    const winIdx = fmt === "girone"
+      ? gironeStandings(t)[0]?.i
+      : t.bracket[t.bracket.length - 1][0].winner;
+    const team = t.teams[winIdx];
+    return team && (team.p1 === pid || team.p2 === pid);
+  }).length;
+  if (tornei) out.push({ icon: "🏆", label: `Tornei vinti ×${tornei}` });
+  return out;
+}
+
+function sparklineSVG(curve) {
+  if (curve.length < 2) return "";
+  const W = 480, H = 90, PAD = 6;
+  const min = Math.min(...curve), max = Math.max(...curve);
+  const span = Math.max(max - min, 10);
+  const x = (i) => PAD + (i / (curve.length - 1)) * (W - 2 * PAD);
+  const y = (v) => H - PAD - ((v - min) / span) * (H - 2 * PAD);
+  const pts = curve.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
+    <polyline points="${pts}" fill="none" stroke="#E8B341" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>
+  <div class="meta" style="display:flex;justify-content:space-between"><span>min ${min}</span><span>max ${max}</span></div>`;
+}
+
+function renderProfile(pid) {
+  const p = byId(pid);
+  if (!p) return `<div class="empty">Giocatore non trovato.</div>`;
+  const d = profileData(pid);
+  const tot = p.wins + p.losses;
+  const pct = tot ? Math.round((p.wins / tot) * 100) : 0;
+  const badges = badgesOf(pid, d);
+  const chips = badges.length
+    ? badges.map((b) => `<span class="chip">${b.icon} ${esc(b.label)}</span>`).join("")
+    : `<span class="meta">Ancora nessun trofeo. C'è tempo.</span>`;
+  const line = (label, val) => `<p><span style="opacity:0.7">${label}:</span> ${val}</p>`;
+  let stats = "";
+  if (d.nemesi) stats += line("Nemesi", `<b>${esc(nameOf(d.nemesi.id))}</b> (${d.nemesi.r.l}S–${d.nemesi.r.w}V contro)`);
+  if (d.vittima) stats += line("Vittima preferita", `<b>${esc(nameOf(d.vittima.id))}</b> (${d.vittima.r.w}V–${d.vittima.r.l}S contro)`);
+  if (d.oro) {
+    const wr = Math.round((d.oro.r.w / (d.oro.r.w + d.oro.r.l)) * 100);
+    stats += line("Compagno d'oro", `<b>${esc(nameOf(d.oro.id))}</b> (${wr}% di vittorie insieme)`);
+  }
+  if (d.bestWin) stats += line("Miglior vittoria", `<b>${Math.max(d.bestWin.m.score_a, d.bestWin.m.score_b)}–${Math.min(d.bestWin.m.score_a, d.bestWin.m.score_b)}</b> il ${fmtDate(d.bestWin.m.created_at, false)}`);
+  if (d.bestStreak >= 2) stats += line("Miglior striscia", `<b>${d.bestStreak} vittorie</b> di fila`);
+  if (!stats) stats = `<p class="meta">Servono un po' di partite per le statistiche.</p>`;
+
+  return `
+    <button class="undo" id="profile-back">← Torna alla classifica</button>
+    <div class="info-card">
+      <h3>${esc(p.name).toUpperCase()}</h3>
+      <p style="font-family:var(--font-display);font-size:30px;margin:4px 0">${p.elo}</p>
+      <p class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}% vittorie` : ""} · ${d.ms.length} partite recenti</p>
+    </div>
+    ${d.curve.length >= 2 ? `<div class="info-card"><h3>ANDAMENTO ELO</h3>${sparklineSVG(d.curve)}</div>` : ""}
+    <div class="info-card"><h3>BACHECA</h3>${chips}</div>
+    <div class="info-card"><h3>STATISTICHE</h3>${stats}</div>`;
+}
+
 function render() {
   renderNav();
   const app = document.getElementById("app");
@@ -1026,6 +1236,10 @@ function render() {
 
   // ---------- CLASSIFICA ----------
   if (tab === "classifica") {
+    if (state.profileId) {
+      app.innerHTML = renderProfile(state.profileId);
+      return;
+    }
     if (players.length === 0) {
       app.innerHTML = `<div class="empty">Nessun giocatore in rosa. Aggiungi i primi nella scheda Giocatori.</div>`;
       return;
@@ -1037,7 +1251,7 @@ function render() {
       const form = formOf(p.id, season?.id ?? null);
       const dots = form.map((w) => `<span class="dot ${w ? "w" : "l"}"></span>`).join("");
       const streak = streakOf(form);
-      return `<div class="row ${i === 0 ? "first" : ""}">
+      return `<div class="row ${i === 0 ? "first" : ""}" data-profile="${p.id}" style="cursor:pointer">
         <div class="rank ${i === 0 ? "gold" : ""}">${i + 1}</div>
         <div style="flex:1">
           <div class="player-name">${esc(p.name)}</div>
@@ -1095,6 +1309,33 @@ function render() {
       </div>`;
     };
 
+    let forecast = "";
+    if (playersOk) {
+      const fIdsA = state.teamA.slice(0, size);
+      const fIdsB = state.teamB.slice(0, size);
+      const pA = Math.round(expectedScore(teamRating(fIdsA), teamRating(fIdsB)) * 100);
+      let deltaLine = "";
+      const outcomeKnown = state.noScore ? !!state.winnerSide : state.scoreA !== state.scoreB;
+      if (outcomeKnown) {
+        const { deltas } = computeMatch(
+          fIdsA, fIdsB,
+          state.noScore ? null : state.scoreA,
+          state.noScore ? null : state.scoreB,
+          state.noScore ? state.winnerSide : null
+        );
+        deltaLine = `<div class="meta" style="margin-top:4px">Se va così: ` +
+          [...fIdsA, ...fIdsB].map((id) =>
+            `${esc(nameOf(id))} ${deltas[id] >= 0 ? "+" : ""}${deltas[id]}`).join(" · ") +
+          `</div>`;
+      }
+      forecast = `<div class="forecast">
+        <span style="color:var(--red-light);font-weight:700">Rossi ${pA}%</span>
+        <span style="opacity:0.5"> · </span>
+        <span style="color:var(--blue-light);font-weight:700">Blu ${100 - pA}%</span>
+        ${deltaLine}
+      </div>`;
+    }
+
     let hint;
     if (state.noScore) {
       hint = "Senza punteggio la partita vale circa la metà di una vittoria di misura.";
@@ -1138,6 +1379,7 @@ function render() {
         <div class="vs">VS</div>
         ${teamCard(state.teamB, "blue", "BLU", state.scoreB, "B")}
       </div>
+      ${forecast}
       <div class="hint">${hint}</div>
       <button class="cta" id="save-match" ${valid && !state.busy ? "" : "disabled"}>
         ${isAdmin() ? "Registra partita" : "Invia partita"}
@@ -1207,7 +1449,11 @@ function render() {
 
         html += `
           <div class="auth-box" style="margin-top:0;margin-bottom:18px">
-            <div class="meta" style="margin-bottom:4px">Nuovo torneo a eliminazione diretta (coppie fisse, teste di serie per ELO).</div>
+            <div class="meta" style="margin-bottom:4px">Nuovo torneo a coppie fisse: tabellone a eliminazione o girone all'italiana.</div>
+            <div class="mode-row" style="margin-bottom:0">
+              <button data-tformat="elim" class="${state.tFormat === "elim" ? "active" : ""}" style="font-size:12px">Eliminazione</button>
+              <button data-tformat="girone" class="${state.tFormat === "girone" ? "active" : ""}" style="font-size:12px">Girone</button>
+            </div>
             <input id="t-name" placeholder="Nome torneo" maxlength="40" value="${esc(state.tName)}">
             ${pairRows}
             <button class="undo" id="t-addpair" style="margin-bottom:0">+ Aggiungi coppia</button>
@@ -1230,8 +1476,12 @@ function render() {
       const rounds = t.bracket;
       const total = rounds.length;
       const canRecord = isAdmin() && seasonById(t.season_id)?.active;
+      const fmt = t.format ?? "elim";
 
       let bracketHTML = "";
+      if (fmt === "girone") {
+        bracketHTML = gironeHTML(t, canRecord);
+      } else
       rounds.forEach((round, r) => {
         bracketHTML += `<div class="b-round"><div class="section-label">${roundName(r, total)}</div>`;
         round.forEach((m, i) => {
@@ -1258,7 +1508,7 @@ function render() {
 
       html += `<div class="info-card">
         <h3>${esc(t.name).toUpperCase()}</h3>
-        <p class="meta" style="margin-bottom:10px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie</p>
+        <p class="meta" style="margin-bottom:10px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie · ${fmt === "girone" ? "girone" : "eliminazione"}</p>
         ${bracketHTML}
       </div>`;
     }
@@ -1266,21 +1516,31 @@ function render() {
     if (doneT.length) {
       html += `<div class="section-label" style="margin-top:22px">ALBO TORNEI</div>`;
       for (const t of doneT) {
-        const finale = t.bracket[t.bracket.length - 1][0];
-        const loserIdx = finale.winner === finale.a ? finale.b : finale.a;
-        const finalScore = finale.score
-          ? (finale.winner === finale.a
-              ? `${finale.score[0]}–${finale.score[1]}`
-              : `${finale.score[1]}–${finale.score[0]}`)
-          : "";
+        const fmt = t.format ?? "elim";
+        let winIdx, detail;
+        if (fmt === "girone") {
+          const st = gironeStandings(t);
+          winIdx = st[0].i;
+          detail = st[1] ? `Girone all'italiana · secondi: ${esc(teamLabel(t, st[1].i))} (${st[1].w}V)` : "Girone all'italiana";
+        } else {
+          const finale = t.bracket[t.bracket.length - 1][0];
+          winIdx = finale.winner;
+          const loserIdx = finale.winner === finale.a ? finale.b : finale.a;
+          const finalScore = finale.score
+            ? (finale.winner === finale.a
+                ? `${finale.score[0]}–${finale.score[1]}`
+                : `${finale.score[1]}–${finale.score[0]}`)
+            : "";
+          detail = `Finale: battuta ${esc(teamLabel(t, loserIdx))}${finalScore ? " " + finalScore : ""}`;
+        }
         html += `<div class="info-card">
           <h3>${esc(t.name).toUpperCase()}</h3>
           <p class="meta" style="margin-bottom:8px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie</p>
           <div class="podium-row">
             <span class="medal">🏆</span>
-            <span class="player-name" style="font-size:15px">${esc(teamLabel(t, finale.winner))}</span>
+            <span class="player-name" style="font-size:15px">${esc(teamLabel(t, winIdx))}</span>
           </div>
-          <p class="meta" style="margin-top:6px">Finale: battuta ${esc(teamLabel(t, loserIdx))}${finalScore ? " " + finalScore : ""}</p>
+          <p class="meta" style="margin-top:6px">${detail}</p>
         </div>`;
       }
     }
@@ -1453,6 +1713,21 @@ function render() {
   }
 }
 
+// ---------- Realtime ----------
+let rtTimer;
+function subscribeRealtime() {
+  sb.channel("db-changes")
+    .on("postgres_changes", { event: "*", schema: "public" }, () => {
+      clearTimeout(rtTimer);
+      rtTimer = setTimeout(async () => {
+        if (state.busy) return;
+        await loadAll();
+        render();
+      }, 500);
+    })
+    .subscribe();
+}
+
 // ---------- Eventi ----------
 async function withBusy(fn) {
   if (state.busy) return;
@@ -1469,7 +1744,24 @@ document.addEventListener("click", async (e) => {
 
   if (t.dataset.tab) {
     state.tab = t.dataset.tab;
+    state.profileId = null;
     await loadAll();
+    render();
+    return;
+  }
+  if (t.id === "profile-back") {
+    state.profileId = null;
+    render();
+    return;
+  }
+  const profEl = e.target.closest?.("[data-profile]");
+  if (profEl && !e.target.closest("button")) {
+    state.profileId = profEl.dataset.profile;
+    render();
+    return;
+  }
+  if (t.dataset.tformat) {
+    state.tFormat = t.dataset.tformat;
     render();
     return;
   }
@@ -1640,6 +1932,11 @@ sb.auth.onAuthStateChange((_event, session) => {
 
 await loadAll();
 render();
+subscribeRealtime();
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(() => {});
+}
 </script>
 </body>
 </html>
