@@ -480,6 +480,18 @@ const expectedScore = (ra, rb) => 1 / (1 + Math.pow(10, (rb - ra) / 400));
 const movMultiplier = (goalDiff, winnerElo, loserElo) =>
   Math.log(goalDiff + 1) * (2.2 / ((winnerElo - loserElo) * 0.001 + 2.2));
 
+// Reset di fine stagione a scaglioni: il vantaggio si conserva ma compresso,
+// cosi' il piu' forte non riparte alla pari e non prosciuga gli altri.
+function seasonStartElo(elo) {
+  if (elo >= 1250) return 1150;
+  if (elo >= 1150) return 1100;
+  if (elo >= 1050) return 1050;
+  if (elo >= 950) return 1000;
+  if (elo >= 850) return 950;
+  if (elo >= 750) return 900;
+  return 850;
+}
+
 function teamRating(ids) {
   if (ids.length === 1) return byId(ids[0]).elo;
   const [r1, r2] = ids.map((id) => byId(id).elo);
@@ -830,10 +842,13 @@ async function closeSeason() {
     .update({ active: false, ended_at: new Date().toISOString() })
     .eq("id", season.id);
 
-  // 3) reset del rank
-  const r3 = await sb.from("players")
-    .update({ elo: 1000, wins: 0, losses: 0 })
-    .gte("wins", 0);
+  // 3) reset del rank a scaglioni
+  const resets = await Promise.all(state.players.map((p) =>
+    sb.from("players")
+      .update({ elo: seasonStartElo(p.elo), wins: 0, losses: 0 })
+      .eq("id", p.id)
+  ));
+  const r3 = { error: resets.find((r) => r.error)?.error ?? null };
 
   // 4) avvia la pianificata più vecchia, se c'è
   const next = plannedSeasons().sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0];
@@ -1687,7 +1702,9 @@ function render() {
 
       <div class="info-card">
         <h3>LE STAGIONI</h3>
-        <p>Quando l'admin chiude una stagione, la classifica finale viene <b>archiviata nell'albo d'oro</b> e tutti ripartono da 1000. Le stagioni si possono <b>pianificare in anticipo</b>: alla chiusura di quella in corso, parte automaticamente la prossima in coda. Ogni stagione è un campionato a sé: vincerla conta più del rating assoluto.</p>
+        <p>Quando l'admin chiude una stagione, la classifica finale viene <b>archiviata nell'albo d'oro</b> e si riparte <b>a scaglioni</b>: chi ha chiuso in alto conserva un vantaggio compresso, così il sistema ricorda chi è più forte e non gli regala punti facili contro chi è ripartito da meno.</p>
+        <div class="formula">1250+ → 1150 · 1150+ → 1100 · 1050+ → 1050<br>950+ → 1000 · 850+ → 950 · 750+ → 900 · sotto → 850</div>
+        <p>Le stagioni si possono <b>pianificare in anticipo</b>: alla chiusura di quella in corso, parte automaticamente la prossima in coda. Ogni stagione è un campionato a sé: vincerla conta più del rating assoluto.</p>
       </div>
 
       <div class="info-card">
@@ -1865,7 +1882,7 @@ document.addEventListener("click", async (e) => {
     const pendCount = state.pending.filter((m) => m.season_id === s.id).length;
     const warn = pendCount ? `\n\nAttenzione: ${pendCount} partite in attesa resteranno non conteggiate.` : "";
     const after = next ? `Partirà subito "${next.name}".` : "Non partirà nessuna stagione finché non ne crei una.";
-    if (!confirm(`Chiudere "${s.name}"?\nLa classifica va nell'albo d'oro e tutti ripartono da 1000.\n${after}${warn}`)) return;
+    if (!confirm(`Chiudere "${s.name}"?\nLa classifica va nell'albo d'oro e si riparte a scaglioni in base al rating finale.\n${after}${warn}`)) return;
     return withBusy(closeSeason);
   }
   if (t.dataset.renameseason) {
