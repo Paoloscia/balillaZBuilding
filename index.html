@@ -753,6 +753,12 @@ async function createSeason(name) {
   toast(startNow ? `Stagione "${name}" avviata` : `Stagione "${name}" pianificata`);
 }
 
+async function renameSeason(id, newName) {
+  const { error } = await sb.from("seasons").update({ name: newName }).eq("id", id);
+  if (error) { toast("Errore nel salvataggio", false); return; }
+  toast("Stagione rinominata");
+}
+
 async function deletePlannedSeason(id) {
   const { error } = await sb.from("seasons").delete().eq("id", id);
   if (error) { toast("Errore nell'eliminazione", false); return; }
@@ -873,30 +879,73 @@ async function recordTournamentMatch(tid, r, i, sa, sbv) {
 const teamLabel = (t, idx) =>
   idx == null ? "—" : `${nameOf(t.teams[idx].p1)} + ${nameOf(t.teams[idx].p2)}`;
 
-// ---------- Partite consigliate ----------
+// ---------- Partite consigliate (2v2) ----------
+// Solo chi gioca in questo periodo (ultimi 60 giorni). Premia sfide mai
+// giocate e coppie inedite, divide le coppie abituali, preferisce chi
+// gioca spesso e squadre equilibrate.
 function suggestedMatches() {
-  const faced = new Set();
-  const games = {};
+  const now = Date.now();
+  const MAX_AGE = 60 * 24 * 3600 * 1000;
+  const keyOf = (a, b) => (a < b ? a + "|" + b : b + "|" + a);
+  const games = {}, last = {}, faced = {}, teamed = {};
+
   for (const m of state.matches) {
-    for (const id of [...m.team_a, ...m.team_b]) games[id] = (games[id] ?? 0) + 1;
-    for (const a of m.team_a) for (const b of m.team_b)
-      faced.add(a < b ? a + "|" + b : b + "|" + a);
-  }
-  const out = [];
-  const ps = state.players;
-  for (let i = 0; i < ps.length; i++) {
-    for (let j = i + 1; j < ps.length; j++) {
-      const a = ps[i], b = ps[j];
-      const key = a.id < b.id ? a.id + "|" + b.id : b.id + "|" + a.id;
-      if (faced.has(key)) continue;
-      const g = (games[a.id] ?? 0) + (games[b.id] ?? 0);
-      const gap = Math.abs(a.elo - b.elo);
-      // priorità: pochi precedenti in assoluto, poi rating vicini
-      out.push({ a, b, score: g * 25 + gap });
+    const dt = new Date(m.created_at).getTime();
+    for (const id of [...m.team_a, ...m.team_b]) {
+      games[id] = (games[id] ?? 0) + 1;
+      if (!last[id] || dt > last[id]) last[id] = dt;
     }
+    for (const a of m.team_a) for (const b of m.team_b) {
+      const k = keyOf(a, b);
+      faced[k] = (faced[k] ?? 0) + 1;
+    }
+    if (m.team_a.length === 2) { const k = keyOf(m.team_a[0], m.team_a[1]); teamed[k] = (teamed[k] ?? 0) + 1; }
+    if (m.team_b.length === 2) { const k = keyOf(m.team_b[0], m.team_b[1]); teamed[k] = (teamed[k] ?? 0) + 1; }
   }
-  out.sort((x, y) => x.score - y.score);
-  return out.slice(0, 3);
+
+  const active = state.players.filter((p) => last[p.id] && now - last[p.id] <= MAX_AGE);
+  if (active.length < 4) return [];
+
+  const r2 = (a, b) => (a.elo + b.elo) / 2 - HANDICAP * Math.abs(a.elo - b.elo);
+  const cands = [];
+  const PAIRINGS = [[[0, 1], [2, 3]], [[0, 2], [1, 3]], [[0, 3], [1, 2]]];
+
+  for (let i = 0; i < active.length; i++)
+    for (let j = i + 1; j < active.length; j++)
+      for (let k = j + 1; k < active.length; k++)
+        for (let l = k + 1; l < active.length; l++) {
+          const q = [active[i], active[j], active[k], active[l]];
+          for (const [[a1, a2], [b1, b2]] of PAIRINGS) {
+            const A = [q[a1], q[a2]], B = [q[b1], q[b2]];
+            const cross = [[A[0], B[0]], [A[0], B[1]], [A[1], B[0]], [A[1], B[1]]];
+            const newFaced = cross.filter(([x, y]) => !faced[keyOf(x.id, y.id)]).length;
+            const newTeams =
+              (teamed[keyOf(A[0].id, A[1].id)] ? 0 : 1) +
+              (teamed[keyOf(B[0].id, B[1].id)] ? 0 : 1);
+            if (newFaced === 0 && newTeams === 0) continue; // niente di nuovo
+            const habit =
+              (teamed[keyOf(A[0].id, A[1].id)] ?? 0) +
+              (teamed[keyOf(B[0].id, B[1].id)] ?? 0);
+            const activity = q.reduce((s, p) => s + (games[p.id] ?? 0), 0);
+            const gap = Math.abs(r2(A[0], A[1]) - r2(B[0], B[1]));
+            const score =
+              newFaced * 30 + newTeams * 20
+              - Math.min(habit, 10) * 6
+              + Math.min(activity, 40)
+              - gap * 0.1;
+            cands.push({ A, B, newFaced, newTeams, score });
+          }
+        }
+
+  cands.sort((x, y) => y.score - x.score);
+  const out = [];
+  for (const c of cands) {
+    const ids = new Set([...c.A, ...c.B].map((p) => p.id));
+    const overlap = out.some((o) => [...o.A, ...o.B].filter((p) => ids.has(p.id)).length >= 3);
+    if (!overlap) out.push(c);
+    if (out.length === 3) break;
+  }
+  return out;
 }
 
 // ---------- UI ----------
@@ -1060,15 +1109,19 @@ function render() {
     const sugg = suggestedMatches();
     const suggHTML = sugg.length
       ? `<div class="section-label" style="margin-top:26px">PARTITE CONSIGLIATE</div>
-         <div class="meta" style="margin-bottom:8px">Sfide mai giocate: aiutano a calcolare meglio i rank.</div>` +
-        sugg.map(({ a, b }) =>
-          `<div class="row">
+         <div class="meta" style="margin-bottom:8px">2v2 con coppie mescolate e sfide nuove: aiutano a calcolare meglio i rank.</div>` +
+        sugg.map(({ A, B, newFaced, newTeams }) => {
+          const bits = [];
+          if (newFaced) bits.push(`${newFaced} sfide mai giocate`);
+          if (newTeams) bits.push(newTeams === 2 ? "coppie inedite" : "una coppia inedita");
+          return `<div class="row">
             <div style="flex:1">
-              <div class="player-name" style="font-size:14px">${esc(a.name)} <span style="opacity:0.6">vs</span> ${esc(b.name)}</div>
-              <div class="meta">${a.elo} vs ${b.elo} · mai affrontati</div>
+              <div class="player-name" style="font-size:14px">${esc(A[0].name)} + ${esc(A[1].name)} <span style="opacity:0.6">vs</span> ${esc(B[0].name)} + ${esc(B[1].name)}</div>
+              <div class="meta">${bits.join(" · ")}</div>
             </div>
-            <button class="use-btn" data-suggest="${a.id}|${b.id}">Usa</button>
-          </div>`).join("")
+            <button class="use-btn" data-suggest="${A[0].id}|${A[1].id}|${B[0].id}|${B[1].id}">Usa</button>
+          </div>`;
+        }).join("")
       : "";
 
     app.innerHTML = `
@@ -1169,12 +1222,14 @@ function render() {
       return;
     }
 
-    for (const t of state.tournaments) {
+    const openT = state.tournaments.filter((t) => t.status === "open");
+    const doneT = state.tournaments.filter((t) => t.status === "done");
+
+    if (openT.length) html += `<div class="section-label">IN CORSO</div>`;
+    for (const t of openT) {
       const rounds = t.bracket;
       const total = rounds.length;
-      const done = t.status === "done";
-      const finale = rounds[total - 1][0];
-      const canRecord = isAdmin() && !done && seasonById(t.season_id)?.active;
+      const canRecord = isAdmin() && seasonById(t.season_id)?.active;
 
       let bracketHTML = "";
       rounds.forEach((round, r) => {
@@ -1202,11 +1257,32 @@ function render() {
       });
 
       html += `<div class="info-card">
-        <h3>${esc(t.name).toUpperCase()} ${done ? "· CONCLUSO" : ""}</h3>
+        <h3>${esc(t.name).toUpperCase()}</h3>
         <p class="meta" style="margin-bottom:10px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie</p>
-        ${done ? `<p>🏆 Vincitori: <b>${esc(teamLabel(t, finale.winner))}</b></p>` : ""}
         ${bracketHTML}
       </div>`;
+    }
+
+    if (doneT.length) {
+      html += `<div class="section-label" style="margin-top:22px">ALBO TORNEI</div>`;
+      for (const t of doneT) {
+        const finale = t.bracket[t.bracket.length - 1][0];
+        const loserIdx = finale.winner === finale.a ? finale.b : finale.a;
+        const finalScore = finale.score
+          ? (finale.winner === finale.a
+              ? `${finale.score[0]}–${finale.score[1]}`
+              : `${finale.score[1]}–${finale.score[0]}`)
+          : "";
+        html += `<div class="info-card">
+          <h3>${esc(t.name).toUpperCase()}</h3>
+          <p class="meta" style="margin-bottom:8px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie</p>
+          <div class="podium-row">
+            <span class="medal">🏆</span>
+            <span class="player-name" style="font-size:15px">${esc(teamLabel(t, finale.winner))}</span>
+          </div>
+          <p class="meta" style="margin-top:6px">Finale: battuta ${esc(teamLabel(t, loserIdx))}${finalScore ? " " + finalScore : ""}</p>
+        </div>`;
+      }
     }
     app.innerHTML = html;
     return;
@@ -1234,7 +1310,8 @@ function render() {
           <h3>${esc(season.name).toUpperCase()}</h3>
           <p class="meta" style="margin-bottom:8px">dal ${fmtDate(season.created_at, false)}${pendCount ? ` · ${pendCount} partite in attesa` : ""}</p>
           ${leader ? `<p>In testa: <b>${esc(leader.name)}</b> (${leader.elo})</p>` : "<p>Nessun giocatore.</p>"}
-          ${isAdmin() ? `<button class="close-btn" id="close-season">Chiudi stagione</button>` : ""}
+          ${isAdmin() ? `<button class="close-btn" id="close-season">Chiudi stagione</button>
+          <button class="close-btn" data-renameseason="${season.id}" style="margin-left:6px">✏️ Rinomina</button>` : ""}
         </div>`;
     } else {
       html += `<div class="empty">Nessuna stagione in corso.</div>`;
@@ -1247,7 +1324,8 @@ function render() {
         `<div class="row">
           <div class="player-name" style="flex:1">${esc(s.name)}</div>
           <div class="meta">in coda</div>
-          ${isAdmin() ? `<button class="del-btn" data-delseason="${s.id}">✕</button>` : ""}
+          ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina">✏️</button>
+          <button class="del-btn" data-delseason="${s.id}">✕</button>` : ""}
         </div>`).join("");
     }
 
@@ -1268,7 +1346,7 @@ function render() {
         const others = res.length > 3 ? `<div class="meta" style="margin-top:6px">e altri ${res.length - 3} giocatori</div>` : "";
         const dates = `${fmtDate(s.created_at, false)} → ${s.ended_at ? fmtDate(s.ended_at, false) : "?"}`;
         return `<div class="info-card">
-          <h3>${esc(s.name).toUpperCase()}</h3>
+          <h3>${esc(s.name).toUpperCase()} ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina" style="float:right">✏️</button>` : ""}</h3>
           <p class="meta" style="margin-bottom:10px">${dates}</p>
           ${podium || `<p class="meta">Nessun risultato archiviato.</p>`}
           ${others}
@@ -1328,7 +1406,7 @@ function render() {
 
       <div class="info-card">
         <h3>PARTITE CONSIGLIATE</h3>
-        <p>Nella scheda Partita trovi sfide suggerite tra chi <b>non si è mai affrontato</b>. L'ELO diventa più preciso quando tutti giocano contro tutti: se sfidi sempre le stesse persone, il tuo rating è confrontabile solo con il loro.</p>
+        <p>Nella scheda Partita trovi 2v2 suggeriti tra chi sta giocando in questo periodo: <b>coppie mescolate e sfide mai giocate</b>. L'ELO diventa più preciso quando tutti giocano con e contro tutti; le coppie fisse rendono i rating confrontabili solo tra loro. Chi non gioca da più di due mesi non viene proposto.</p>
       </div>
 
       <div class="info-card">
@@ -1425,12 +1503,12 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (t.dataset.suggest) {
-    const [a, b] = t.dataset.suggest.split("|");
-    state.mode = "1v1";
+    const [a1, a2, b1, b2] = t.dataset.suggest.split("|");
+    state.mode = "2v2";
     state.noScore = false;
     state.winnerSide = null;
-    state.teamA = [a, ""];
-    state.teamB = [b, ""];
+    state.teamA = [a1, a2];
+    state.teamB = [b1, b2];
     state.scoreA = 0;
     state.scoreB = 0;
     render();
@@ -1461,6 +1539,15 @@ document.addEventListener("click", async (e) => {
     const after = next ? `Partirà subito "${next.name}".` : "Non partirà nessuna stagione finché non ne crei una.";
     if (!confirm(`Chiudere "${s.name}"?\nLa classifica va nell'albo d'oro e tutti ripartono da 1000.\n${after}${warn}`)) return;
     return withBusy(closeSeason);
+  }
+  if (t.dataset.renameseason) {
+    const s = seasonById(t.dataset.renameseason);
+    if (!s) return;
+    const newName = prompt(`Nuovo nome per "${s.name}":`, s.name);
+    if (newName == null) return;
+    const clean = newName.trim().slice(0, 40);
+    if (!clean || clean === s.name) return;
+    return withBusy(() => renameSeason(s.id, clean));
   }
   if (t.dataset.delseason) {
     const s = seasonById(t.dataset.delseason);
