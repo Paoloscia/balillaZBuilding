@@ -284,6 +284,16 @@
     font-weight: 800; font-size: 14px;
     cursor: pointer;
   }
+  .role-select {
+    border: none;
+    border-radius: 7px;
+    background: rgba(255,255,255,0.12);
+    color: var(--cream);
+    font-size: 12px;
+    padding: 6px 4px;
+    max-width: 130px;
+  }
+  .role-select option { color: #1c1c1c; }
   .edit-btn, .del-btn {
     border: none;
     background: rgba(255,255,255,0.08);
@@ -594,6 +604,9 @@ const TABS = [
   ["elo", "ELO"],
 ];
 
+const ROLE_LABEL = { difensore: "🛡️ Difensore", attaccante: "⚽ Attaccante", ibrido: "🔁 Ibrido" };
+const roleOf = (p) => p.role ?? "ibrido";
+
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -656,6 +669,12 @@ async function renamePlayer(id, newName) {
   // aggiorna anche l'albo d'oro
   await sb.from("season_results").update({ name: newName }).eq("player_id", id);
   toast("Nome aggiornato");
+}
+
+async function setRole(id, role) {
+  const { error } = await sb.from("players").update({ role }).eq("id", id);
+  if (error) { toast("Errore nel salvataggio del ruolo", false); return; }
+  toast("Ruolo aggiornato");
 }
 
 async function applyDeltas(deltas, winners, sign = 1) {
@@ -998,6 +1017,12 @@ function suggestedMatches() {
           const q = [active[i], active[j], active[k], active[l]];
           for (const [[a1, a2], [b1, b2]] of PAIRINGS) {
             const A = [q[a1], q[a2]], B = [q[b1], q[b2]];
+            const doubleAttack = (T) => roleOf(T[0]) === "attaccante" && roleOf(T[1]) === "attaccante";
+            if (doubleAttack(A) || doubleAttack(B)) continue; // mai due attaccanti insieme
+            const compl = [A, B].filter((T) => {
+              const r = T.map(roleOf);
+              return r.includes("attaccante") && r.includes("difensore");
+            }).length;
             const cross = [[A[0], B[0]], [A[0], B[1]], [A[1], B[0]], [A[1], B[1]]];
             const newFaced = cross.filter(([x, y]) => !faced[keyOf(x.id, y.id)]).length;
             const newTeams =
@@ -1011,6 +1036,7 @@ function suggestedMatches() {
             const gap = Math.abs(r2(A[0], A[1]) - r2(B[0], B[1]));
             const score =
               newFaced * 30 + newTeams * 20
+              + compl * 8
               - Math.min(habit, 10) * 6
               + Math.min(activity, 40)
               - gap * 0.1;
@@ -1221,7 +1247,7 @@ function renderProfile(pid) {
     <div class="info-card">
       <h3>${esc(p.name).toUpperCase()}</h3>
       <p style="font-family:var(--font-display);font-size:30px;margin:4px 0">${p.elo}</p>
-      <p class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}% vittorie` : ""} · ${d.ms.length} partite recenti</p>
+      <p class="meta">${ROLE_LABEL[roleOf(p)]} · ${p.wins}V – ${p.losses}S${tot ? ` · ${pct}% vittorie` : ""} · ${d.ms.length} partite recenti</p>
     </div>
     ${d.curve.length >= 2 ? `<div class="info-card"><h3>ANDAMENTO ELO</h3>${sparklineSVG(d.curve)}</div>` : ""}
     <div class="info-card"><h3>BACHECA</h3>${chips}</div>
@@ -1666,7 +1692,7 @@ function render() {
 
       <div class="info-card">
         <h3>PARTITE CONSIGLIATE</h3>
-        <p>Nella scheda Partita trovi 2v2 suggeriti tra chi sta giocando in questo periodo: <b>coppie mescolate e sfide mai giocate</b>. L'ELO diventa più preciso quando tutti giocano con e contro tutti; le coppie fisse rendono i rating confrontabili solo tra loro. Chi non gioca da più di due mesi non viene proposto.</p>
+        <p>Nella scheda Partita trovi 2v2 suggeriti tra chi sta giocando in questo periodo: <b>coppie mescolate e sfide mai giocate</b>. L'ELO diventa più preciso quando tutti giocano con e contro tutti; le coppie fisse rendono i rating confrontabili solo tra loro. Chi non gioca da più di due mesi non viene proposto, e l'algoritmo rispetta i ruoli: <b>mai due attaccanti nella stessa coppia</b>, con preferenza per le coppie attaccante+difensore.</p>
       </div>
 
       <div class="info-card">
@@ -1678,13 +1704,23 @@ function render() {
 
   // ---------- GIOCATORI ----------
   if (tab === "rosa") {
-    const rows = players.map((p) =>
-      `<div class="row">
-        <div class="player-name" style="flex:1">${esc(p.name)}</div>
-        <div class="meta">ELO ${p.elo} · ${p.wins}V–${p.losses}S</div>
+    const rows = players.map((p) => {
+      const role = roleOf(p);
+      const roleUI = isAdmin()
+        ? `<select class="role-select" data-roleplayer="${p.id}">
+            ${["difensore", "attaccante", "ibrido"].map((r) =>
+              `<option value="${r}" ${r === role ? "selected" : ""}>${ROLE_LABEL[r]}</option>`).join("")}
+          </select>`
+        : `<span class="meta" style="margin-top:0;white-space:nowrap">${ROLE_LABEL[role]}</span>`;
+      return `<div class="row">
+        <div style="flex:1;min-width:0">
+          <div class="player-name">${esc(p.name)}</div>
+          <div class="meta">ELO ${p.elo} · ${p.wins}V–${p.losses}S</div>
+        </div>
+        ${roleUI}
         ${isAdmin() ? `<button class="edit-btn" data-rename="${p.id}" title="Rinomina">✏️</button>` : ""}
-      </div>`
-    ).join("");
+      </div>`;
+    }).join("");
 
     const addForm = isAdmin()
       ? `<div class="add-row">
@@ -1908,6 +1944,10 @@ document.addEventListener("change", (e) => {
   if (t.dataset.tpair != null) {
     state.tPairs[Number(t.dataset.tpair)][Number(t.dataset.tslot)] = t.value;
     render();
+    return;
+  }
+  if (t.dataset.roleplayer) {
+    withBusy(() => setRole(t.dataset.roleplayer, t.value));
   }
 });
 
