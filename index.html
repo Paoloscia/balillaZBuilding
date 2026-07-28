@@ -609,6 +609,7 @@ const state = {
   matches: [],        // confermate, ultime 200
   pending: [],
   tournaments: [],
+  requests: [],
   tab: "classifica",
   historySeason: "all",
   tPairs: [["", ""], ["", ""]],
@@ -675,7 +676,7 @@ const fmtDate = (iso, withTime = true) =>
 
 // ---------- Dati ----------
 async function loadAll() {
-  const [pRes, sRes, rRes, mRes, pendRes, tRes] = await Promise.all([
+  const [pRes, sRes, rRes, mRes, pendRes, tRes, reqRes] = await Promise.all([
     sb.from("players").select("*").order("elo", { ascending: false }),
     sb.from("seasons").select("*").order("created_at", { ascending: false }),
     sb.from("season_results").select("*").order("rank", { ascending: true }),
@@ -684,8 +685,9 @@ async function loadAll() {
     sb.from("matches").select("*").eq("status", "pending")
       .order("created_at", { ascending: true }),
     sb.from("tournaments").select("*").order("created_at", { ascending: false }),
+    sb.from("player_requests").select("*").order("created_at", { ascending: true }),
   ]);
-  if (pRes.error || sRes.error || rRes.error || mRes.error || pendRes.error || tRes.error) {
+  if (pRes.error || sRes.error || rRes.error || mRes.error || pendRes.error || tRes.error || reqRes.error) {
     toast("Errore di connessione: controlla configurazione e script SQL", false);
     return;
   }
@@ -694,6 +696,7 @@ async function loadAll() {
   state.matches = mRes.data;
   state.pending = pendRes.data;
   state.tournaments = tRes.data;
+  state.requests = reqRes.data;
 
   state.results = {};
   for (const r of rRes.data) (state.results[r.season_id] ??= []).push(r);
@@ -710,6 +713,31 @@ async function addPlayer(name) {
   }
   toast(`${name} aggiunto alla rosa`);
   return true;
+}
+
+async function requestPlayer(name) {
+  if (state.players.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+    toast("Giocatore già in rosa", false);
+    return false;
+  }
+  const { error } = await sb.from("player_requests").insert({ name });
+  if (error) {
+    toast(error.code === "23505" ? "Richiesta già presente" : "Errore nell'invio", false);
+    return false;
+  }
+  toast("Richiesta inviata: un admin dovrà confermarla");
+  return true;
+}
+
+async function approveRequest(req) {
+  const ok = await addPlayer(req.name);
+  if (ok) await sb.from("player_requests").delete().eq("id", req.id);
+}
+
+async function rejectRequest(id) {
+  const del = await sb.from("player_requests").delete().eq("id", id);
+  if (del.error) { toast("Errore, riprova", false); return; }
+  toast("Richiesta rifiutata");
 }
 
 async function renamePlayer(id, newName) {
@@ -1233,8 +1261,12 @@ function toast(text, ok = true) {
 
 function renderNav() {
   document.getElementById("nav").innerHTML = TABS.map(([key, label]) => {
-    const badge = key === "storico" && state.pending.length && isAdmin()
-      ? `<span class="badge">${state.pending.length}</span>` : "";
+    let count = 0;
+    if (isAdmin()) {
+      if (key === "storico") count = state.pending.length;
+      if (key === "rosa") count = state.requests.length;
+    }
+    const badge = count ? `<span class="badge">${count}</span>` : "";
     return `<button data-tab="${key}" class="${state.tab === key ? "active" : ""}">${label}${badge}</button>`;
   }).join("");
   document.getElementById("season-eyebrow").textContent =
@@ -2014,6 +2046,25 @@ function render() {
           <input id="new-name" placeholder="Nome giocatore" maxlength="30">
           <button id="add-player">Aggiungi</button>
         </div>`
+      : `<div class="add-row">
+          <input id="req-name" placeholder="Proponi un giocatore" maxlength="30">
+          <button id="request-player">Proponi</button>
+        </div>`;
+
+    const requestsHTML = state.requests.length
+      ? `<div class="section-label">RICHIESTE DI AGGIUNTA (${state.requests.length})</div>` +
+        state.requests.map((r) =>
+          `<div class="match-row pending">
+            <div style="flex:1">
+              <div class="player-name">${esc(r.name)}</div>
+              <div class="meta">proposto il ${fmtDate(r.created_at)}</div>
+              ${isAdmin() ? `<div class="confirm-actions">
+                <button class="btn-confirm" data-approvereq="${r.id}">Conferma</button>
+                <button class="btn-reject" data-rejectreq="${r.id}">Rifiuta</button>
+              </div>` : ""}
+            </div>
+          </div>`).join("") +
+        `<div style="height:10px"></div>`
       : "";
 
     const authBox = isAdmin()
@@ -2030,6 +2081,7 @@ function render() {
 
     app.innerHTML = `
       ${addForm}
+      ${requestsHTML}
       ${rows || `<div class="empty">Nessun giocatore in rosa.</div>`}
       ${authBox}
       <div class="foot-note">Chiunque può vedere tutto e proporre partite; solo gli admin confermano, gestiscono rosa, stagioni e tornei.</div>`;
@@ -2231,6 +2283,20 @@ document.addEventListener("click", async (e) => {
     if (!name) return;
     return withBusy(() => addPlayer(name));
   }
+  if (t.id === "request-player") {
+    const name = document.getElementById("req-name").value.trim();
+    if (!name) return;
+    return withBusy(() => requestPlayer(name));
+  }
+  if (t.dataset.approvereq) {
+    const r = state.requests.find((x) => x.id === t.dataset.approvereq);
+    if (!r) return;
+    return withBusy(() => approveRequest(r));
+  }
+  if (t.dataset.rejectreq) {
+    if (!confirm("Rifiutare questa richiesta?")) return;
+    return withBusy(() => rejectRequest(t.dataset.rejectreq));
+  }
   if (t.id === "login") {
     const email = document.getElementById("login-email").value.trim();
     const password = document.getElementById("login-pass").value;
@@ -2281,6 +2347,7 @@ document.addEventListener("input", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "new-name") document.getElementById("add-player")?.click();
+  if (e.target.id === "req-name") document.getElementById("request-player")?.click();
   if (e.target.id === "login-email" || e.target.id === "login-pass") document.getElementById("login")?.click();
   if (e.target.id === "new-season-name") document.getElementById("create-season")?.click();
 });
