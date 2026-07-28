@@ -470,6 +470,31 @@
   .foot-note { font-size: 12px; opacity: 0.6; text-align: center; margin-top: 20px; }
   .loading { text-align: center; padding: 60px 0; opacity: 0.8; }
 
+  #loadbar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    z-index: 99;
+    display: none;
+    overflow: hidden;
+    background: rgba(0,0,0,0.3);
+  }
+  #loadbar::after {
+    content: "";
+    display: block;
+    height: 100%;
+    width: 40%;
+    background: var(--gold);
+    border-radius: 2px;
+    animation: loadslide 1s ease-in-out infinite;
+  }
+  @keyframes loadslide {
+    0% { transform: translateX(-110%); }
+    100% { transform: translateX(360%); }
+  }
+  body.busy #loadbar { display: block; }
+  body.busy main { opacity: 0.65; pointer-events: none; transition: opacity 0.15s; }
+
   body.tv nav, body.tv #toast { display: none !important; }
   body.tv .container { max-width: 760px; }
   body.tv h1 { font-size: 68px; }
@@ -487,6 +512,7 @@
 </style>
 </head>
 <body>
+<div id="loadbar"></div>
 <div class="container">
   <header>
     <div class="eyebrow" id="season-eyebrow">TRA AMICI</div>
@@ -633,6 +659,7 @@ const state = {
   pending: [],
   tournaments: [],
   requests: [],
+  totals: {}, // player_id -> { wins, losses } di sempre
   tab: "classifica",
   historySeason: "all",
   tPairs: [["", ""], ["", ""]],
@@ -641,6 +668,7 @@ const state = {
   tRated: true,
   tSignup: false,
   profileId: null,
+  profileMatches: null, // storico COMPLETO del giocatore aperto (caricato a parte)
   h2hId: null,
   present: [],
   suggestedList: [], // formazioni consigliate usate, col relativo bonus
@@ -701,7 +729,7 @@ const fmtDate = (iso, withTime = true) =>
 
 // ---------- Dati ----------
 async function loadAll() {
-  const [pRes, sRes, rRes, mRes, pendRes, tRes, reqRes] = await Promise.all([
+  const [pRes, sRes, rRes, mRes, pendRes, tRes, reqRes, totRes] = await Promise.all([
     sb.from("players").select("*").order("elo", { ascending: false }),
     sb.from("seasons").select("*").order("created_at", { ascending: false }),
     sb.from("season_results").select("*").order("rank", { ascending: true }),
@@ -711,8 +739,9 @@ async function loadAll() {
       .order("created_at", { ascending: true }),
     sb.from("tournaments").select("*").order("created_at", { ascending: false }),
     sb.from("player_requests").select("*").order("created_at", { ascending: true }),
+    sb.from("player_totals").select("*"),
   ]);
-  if (pRes.error || sRes.error || rRes.error || mRes.error || pendRes.error || tRes.error || reqRes.error) {
+  if (pRes.error || sRes.error || rRes.error || mRes.error || pendRes.error || tRes.error || reqRes.error || totRes.error) {
     toast("Errore di connessione: controlla configurazione e script SQL", false);
     return;
   }
@@ -722,6 +751,7 @@ async function loadAll() {
   state.pending = pendRes.data;
   state.tournaments = tRes.data;
   state.requests = reqRes.data;
+  state.totals = Object.fromEntries(totRes.data.map((r) => [r.player_id, r]));
 
   state.results = {};
   for (const r of rRes.data) (state.results[r.season_id] ??= []).push(r);
@@ -1522,6 +1552,12 @@ async function downloadBackup() {
 }
 
 // ---------- UI ----------
+let loadingCount = 0;
+function setLoading(on) {
+  loadingCount = Math.max(0, loadingCount + (on ? 1 : -1));
+  document.body.classList.toggle("busy", loadingCount > 0);
+}
+
 let toastTimer;
 function toast(text, ok = true) {
   const el = document.getElementById("toast");
@@ -1611,9 +1647,11 @@ function matchRowHTML(m, { pending = false, actions = false, showSeason = false 
 
 // ---------- Profilo giocatore ----------
 function profileData(pid) {
-  const ms = state.matches
-    .filter((m) => m.team_a.includes(pid) || m.team_b.includes(pid))
-    .slice().reverse(); // cronologico
+  const ms = (state.profileId === pid && state.profileMatches)
+    ? state.profileMatches // storico completo, gia' cronologico
+    : state.matches
+        .filter((m) => m.team_a.includes(pid) || m.team_b.includes(pid))
+        .slice().reverse(); // finestra recente in attesa del caricamento
   const curve = [];
   for (const m of ms) if (m.pre && m.pre[pid] != null) curve.push(m.pre[pid]);
   const p = byId(pid);
@@ -1734,7 +1772,7 @@ function renderProfile(pid) {
     if (mte) parts.push(`Insieme: <b>${mte.w}V–${mte.l}S</b>`);
     h2hHTML = parts.length
       ? `<p style="margin-top:10px">${parts.join(" · ")}</p>`
-      : `<p class="meta" style="margin-top:10px">Mai incrociati nelle partite recenti.</p>`;
+      : `<p class="meta" style="margin-top:10px">Mai incrociati.</p>`;
   }
 
   return `
@@ -1742,7 +1780,8 @@ function renderProfile(pid) {
     <div class="info-card">
       <h3>${esc(p.name).toUpperCase()}</h3>
       <p style="font-family:var(--font-display);font-size:30px;margin:4px 0">${p.elo}</p>
-      <p class="meta">${ROLE_LABEL[roleOf(p)]} · ${p.wins}V – ${p.losses}S${tot ? ` · ${pct}% vittorie` : ""} · ${d.ms.length} partite recenti</p>
+      <p class="meta">${ROLE_LABEL[roleOf(p)]} · stagione: ${p.wins}V – ${p.losses}S${tot ? ` (${pct}%)` : ""} · ${d.ms.length} partite ${state.profileMatches ? "in totale" : "recenti"}</p>
+      ${state.profileMatches ? "" : `<p class="meta">carico lo storico completo…</p>`}
     </div>
     ${d.curve.length >= 2 ? `<div class="info-card"><h3>ANDAMENTO ELO</h3>${sparklineSVG(d.curve)}</div>` : ""}
     <div class="info-card"><h3>BACHECA</h3>${chips}</div>
@@ -1759,7 +1798,7 @@ function renderProfile(pid) {
     ${[...d.ms].reverse().slice(0, 20).map((m) =>
       matchRowHTML(m, { showSeason: state.seasons.length > 1 })).join("")
       || `<div class="empty">Nessuna partita recente.</div>`}
-    ${d.ms.length > 20 ? `<div class="foot-note">Mostrate le ultime 20 di ${d.ms.length} partite recenti.</div>` : ""}`;
+    ${d.ms.length > 20 ? `<div class="foot-note">Mostrate le ultime 20 di ${d.ms.length} partite.</div>` : ""}`;
 }
 
 function render() {
@@ -2426,10 +2465,11 @@ function render() {
               `<option value="${r}" ${r === role ? "selected" : ""}>${ROLE_LABEL[r]}</option>`).join("")}
           </select>`
         : `<span class="meta" style="margin-top:0;white-space:nowrap">${ROLE_LABEL[role]}</span>`;
+      const tot = state.totals[p.id] ?? { wins: 0, losses: 0 };
       return `<div class="row">
         <div style="flex:1;min-width:0">
           <div class="player-name">${esc(p.name)}</div>
-          <div class="meta">ELO ${p.elo} · ${p.wins}V–${p.losses}S</div>
+          <div class="meta">ELO ${p.elo} · totale: ${tot.wins}V–${tot.losses}S (${tot.wins + tot.losses} partite)</div>
         </div>
         ${roleUI}
         ${isAdmin() ? `<button class="edit-btn" data-rename="${p.id}" title="Rinomina">✏️</button>` : ""}
@@ -2503,11 +2543,16 @@ function subscribeRealtime() {
 async function withBusy(fn) {
   if (state.busy) return;
   state.busy = true;
+  setLoading(true);
   render();
-  await fn();
-  await loadAll();
-  state.busy = false;
-  render();
+  try {
+    await fn();
+    await loadAll();
+  } finally {
+    state.busy = false;
+    setLoading(false);
+    render();
+  }
 }
 
 document.addEventListener("click", async (e) => {
@@ -2517,7 +2562,9 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.tab) {
     state.tab = t.dataset.tab;
     state.profileId = null;
+    setLoading(true);
     await loadAll();
+    setLoading(false);
     render();
     return;
   }
@@ -2528,9 +2575,25 @@ document.addEventListener("click", async (e) => {
   }
   const profEl = e.target.closest?.("[data-profile]");
   if (profEl && !e.target.closest("button")) {
-    state.profileId = profEl.dataset.profile;
+    const pid = profEl.dataset.profile;
+    state.profileId = pid;
     state.h2hId = null;
+    state.profileMatches = null;
     render();
+    (async () => {
+      setLoading(true);
+      try {
+        const { data, error } = await sb.from("matches").select("*").eq("status", "confirmed")
+          .or(`team_a.cs.{${pid}},team_b.cs.{${pid}}`)
+          .order("confirmed_at", { ascending: true });
+        if (!error && data && state.profileId === pid) {
+          state.profileMatches = data;
+          render();
+        }
+      } finally {
+        setLoading(false);
+      }
+    })();
     return;
   }
   if (t.dataset.tformat) {
@@ -2626,7 +2689,8 @@ document.addEventListener("click", async (e) => {
     return withBusy(recalcSeason);
   }
   if (t.id === "backup") {
-    downloadBackup();
+    setLoading(true);
+    downloadBackup().finally(() => setLoading(false));
     return;
   }
   if (t.id === "close-season") {
@@ -2738,7 +2802,9 @@ document.addEventListener("click", async (e) => {
     const email = document.getElementById("login-email").value.trim();
     const password = document.getElementById("login-pass").value;
     if (!email || !password) return;
+    setLoading(true);
     const { error } = await sb.auth.signInWithPassword({ email, password });
+    setLoading(false);
     if (error) { toast("Credenziali non valide", false); return; }
     toast("Accesso effettuato");
     return;
