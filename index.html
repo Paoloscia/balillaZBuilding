@@ -65,6 +65,7 @@
     text-shadow: 0 3px 0 rgba(0,0,0,0.35);
   }
   .subtitle { font-size: 13px; opacity: 0.75; margin-top: 6px; font-style: italic; }
+  .deadline { font-size: 12px; margin-top: 5px; letter-spacing: 0.03em; font-weight: 600; opacity: 0.9; }
 
   nav {
     display: flex; flex-wrap: wrap; gap: 5px;
@@ -473,6 +474,7 @@
     <div class="eyebrow" id="season-eyebrow">TRA AMICI</div>
     <h1>CALCETTO</h1>
     <div class="subtitle">classifica ELO del balilla</div>
+    <div class="deadline" id="season-deadline" style="display:none"></div>
   </header>
   <nav id="nav"></nav>
   <div id="toast"></div>
@@ -656,6 +658,17 @@ const byName = (a, b) => a.name.localeCompare(b.name, "it", { sensitivity: "base
 const nameOf = (id) => byId(id)?.name ?? "?";
 const seasonById = (id) => state.seasons.find((s) => s.id === id);
 const seasonName = (id) => seasonById(id)?.name ?? "?";
+function deadlineInfo(s) {
+  if (!s?.ends_at) return null;
+  const end = new Date(s.ends_at);
+  const days = Math.ceil((end - Date.now()) / 86400000);
+  const dateTxt = end.toLocaleDateString("it-IT", { day: "numeric", month: "short" });
+  if (days > 1) return { text: `La stagione finisce il ${dateTxt} · tra ${days} giorni`, urgent: days <= 7, overdue: false };
+  if (days === 1) return { text: `La stagione finisce domani (${dateTxt})`, urgent: true, overdue: false };
+  if (days === 0) return { text: "La stagione finisce oggi!", urgent: true, overdue: false };
+  return { text: `Stagione scaduta il ${dateTxt}: in attesa di chiusura`, urgent: true, overdue: true };
+}
+
 const fmtDate = (iso, withTime = true) =>
   new Date(iso).toLocaleDateString("it-IT", {
     day: "numeric", month: "short",
@@ -851,9 +864,9 @@ async function undoLast() {
 }
 
 // ---------- Stagioni ----------
-async function createSeason(name) {
+async function createSeason(name, endsAt = null) {
   const startNow = !activeSeason();
-  const { error } = await sb.from("seasons").insert({ name, active: startNow });
+  const { error } = await sb.from("seasons").insert({ name, active: startNow, ends_at: endsAt });
   if (error) { toast("Errore nella creazione", false); return; }
   toast(startNow ? `Stagione "${name}" avviata` : `Stagione "${name}" pianificata`);
 }
@@ -1228,6 +1241,15 @@ function renderNav() {
   }).join("");
   document.getElementById("season-eyebrow").textContent =
     activeSeason()?.name.toUpperCase() ?? "TRA AMICI";
+  const dl = deadlineInfo(activeSeason());
+  const dlEl = document.getElementById("season-deadline");
+  if (dl) {
+    dlEl.textContent = dl.text;
+    dlEl.style.color = dl.overdue ? "var(--red-light)" : dl.urgent ? "var(--gold)" : "var(--cream)";
+    dlEl.style.display = "";
+  } else {
+    dlEl.style.display = "none";
+  }
 }
 
 function formOf(pid, seasonId = null) {
@@ -1820,6 +1842,8 @@ function render() {
         <div class="auth-box" style="margin-top:0;margin-bottom:18px">
           <div class="meta" style="margin-bottom:4px">${season ? "Pianifica la prossima stagione: partirà alla chiusura di quella in corso." : "Crea una stagione: partirà subito."}</div>
           <input id="new-season-name" placeholder="Nome stagione" maxlength="40">
+          <div class="meta" style="margin-bottom:-2px">Fine prevista (facoltativa):</div>
+          <input id="new-season-end" type="date">
           <button class="cta" id="create-season" style="font-size:14px;padding:11px 0">${season ? "Pianifica stagione" : "Crea e avvia stagione"}</button>
         </div>`;
     }
@@ -1828,10 +1852,15 @@ function render() {
       const ranked = [...players].sort((a, b) => b.elo - a.elo);
       const leader = ranked[0];
       const pendCount = pending.filter((m) => m.season_id === season.id).length;
+      const dl = deadlineInfo(season);
       html += `<div class="section-label">IN CORSO</div>
         <div class="info-card">
           <h3>${esc(season.name).toUpperCase()}</h3>
           <p class="meta" style="margin-bottom:8px">dal ${fmtDate(season.created_at, false)}${pendCount ? ` · ${pendCount} partite in attesa` : ""}</p>
+          ${dl ? `<p style="margin-bottom:8px;font-weight:600;color:${dl.overdue ? "var(--red-light)" : dl.urgent ? "var(--gold)" : "var(--cream)"}">${dl.text}</p>` : ""}
+          ${isAdmin() ? `<div class="meta" style="margin-bottom:4px">Fine prevista:</div>
+          <input type="date" data-seasonend="${season.id}" value="${season.ends_at ? season.ends_at.slice(0, 10) : ""}"
+            style="padding:9px 12px;border:none;border-radius:8px;font-size:14px;background:var(--cream);color:#1c1c1c;margin-bottom:6px">` : ""}
           ${leader ? `<p>In testa: <b>${esc(leader.name)}</b> (${leader.elo})</p>` : "<p>Nessun giocatore.</p>"}
           ${isAdmin() ? `<button class="close-btn" id="close-season">Chiudi stagione</button>
           <button class="close-btn" data-renameseason="${season.id}" style="margin-left:6px">✏️ Rinomina</button>` : ""}
@@ -2129,7 +2158,9 @@ document.addEventListener("click", async (e) => {
   if (t.id === "create-season") {
     const name = document.getElementById("new-season-name").value.trim();
     if (!name) { toast("Dai un nome alla stagione", false); return; }
-    return withBusy(() => createSeason(name));
+    const endRaw = document.getElementById("new-season-end")?.value;
+    const endsAt = endRaw ? new Date(endRaw + "T23:59:59").toISOString() : null;
+    return withBusy(() => createSeason(name, endsAt));
   }
   if (t.id === "close-season") {
     const s = activeSeason();
@@ -2227,6 +2258,15 @@ document.addEventListener("change", (e) => {
   }
   if (t.dataset.roleplayer) {
     withBusy(() => setRole(t.dataset.roleplayer, t.value));
+    return;
+  }
+  if (t.dataset.seasonend) {
+    const iso = t.value ? new Date(t.value + "T23:59:59").toISOString() : null;
+    withBusy(async () => {
+      const { error } = await sb.from("seasons").update({ ends_at: iso }).eq("id", t.dataset.seasonend);
+      if (error) toast("Errore nel salvataggio della data", false);
+      else toast(iso ? "Data di fine impostata" : "Data di fine rimossa");
+    });
   }
 });
 
