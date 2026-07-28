@@ -1867,14 +1867,16 @@ function render() {
       html += `<div class="empty">Nessuna stagione in corso.</div>`;
     }
 
-    const planned = plannedSeasons();
+    const planned = plannedSeasons()
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     if (planned.length) {
-      html += `<div class="section-label">PIANIFICATE</div>`;
-      html += planned.map((s) =>
-        `<div class="row">
+      html += `<div class="section-label">PROSSIME STAGIONI, IN ORDINE</div>`;
+      html += planned.map((s, i) =>
+        `<div class="row ${i === 0 ? "first" : ""}">
+          <div class="rank ${i === 0 ? "gold" : ""}" style="font-size:16px">${i + 1}ª</div>
           <div style="flex:1;min-width:0">
             <div class="player-name">${esc(s.name)}</div>
-            <div class="meta">in coda${s.ends_at ? ` · fine prevista ${fmtDate(s.ends_at, false)}` : ""}</div>
+            <div class="meta">${i === 0 ? "parte alla chiusura della stagione in corso" : `parte dopo "${esc(planned[i - 1].name)}"`}${s.ends_at ? ` · fine prevista ${fmtDate(s.ends_at, false)}` : ""}</div>
             ${isAdmin() ? `<input type="date" data-seasonend="${s.id}" value="${s.ends_at ? s.ends_at.slice(0, 10) : ""}"
               style="margin-top:6px;padding:7px 10px;border:none;border-radius:7px;font-size:13px;background:var(--cream);color:#1c1c1c">` : ""}
           </div>
