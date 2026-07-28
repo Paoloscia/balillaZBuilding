@@ -96,6 +96,16 @@
     padding: 1px 5px;
     line-height: 1.3;
   }
+  .badge.gold { background: var(--gold); color: #241505; }
+  .signup-note {
+    background: var(--panel);
+    border-left: 3px solid var(--gold);
+    border-radius: 8px;
+    padding: 9px 12px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
 
   .toast {
     padding: 10px 14px; border-radius: 8px;
@@ -1054,6 +1064,40 @@ async function claimSlot(tid, ti, slot, playerId) {
   toast(`${nameOf(playerId)} iscritto: posto confermato`);
 }
 
+async function addSignupPair(tid) {
+  const t = state.tournaments.find((x) => x.id === tid);
+  if (!t || t.status !== "signup") return;
+  const teams = [...t.teams, { p1: null, p2: null }];
+  const { error } = await sb.from("tournaments").update({ teams }).eq("id", tid);
+  if (error) { toast("Errore", false); return; }
+  toast("Coppia aggiunta");
+}
+
+async function removeSignupPair(tid, ti) {
+  const t = state.tournaments.find((x) => x.id === tid);
+  if (!t || t.status !== "signup") return;
+  if (t.teams.length <= 2) { toast("Servono almeno 2 coppie", false); return; }
+  const teams = t.teams.filter((_, i) => i !== ti);
+  const { error } = await sb.from("tournaments").update({ teams }).eq("id", tid);
+  if (error) { toast("Errore", false); return; }
+  toast("Coppia rimossa");
+}
+
+async function setSignupSlot(tid, ti, slot, playerId) {
+  const t = state.tournaments.find((x) => x.id === tid);
+  if (!t || t.status !== "signup") return;
+  const key = slot === 0 ? "p1" : "p2";
+  if (playerId) {
+    const others = t.teams.flatMap((x, i) =>
+      [i === ti && key === "p1" ? null : x.p1, i === ti && key === "p2" ? null : x.p2]).filter(Boolean);
+    if (others.includes(playerId)) { toast("Giocatore già iscritto a questo torneo", false); return; }
+  }
+  const teams = t.teams.map((x, i) => (i === ti ? { ...x, [key]: playerId || null } : x));
+  const { error } = await sb.from("tournaments").update({ teams }).eq("id", tid);
+  if (error) { toast("Errore nel salvataggio", false); return; }
+  toast(playerId ? `Posto assegnato a ${nameOf(playerId)}` : "Posto liberato");
+}
+
 async function startTournament(t) {
   if (t.status !== "signup") return;
   if (t.teams.some((x) => !x.p1 || !x.p2)) { toast("Ci sono ancora posti vuoti", false); return; }
@@ -1488,12 +1532,16 @@ function toast(text, ok = true) {
 
 function renderNav() {
   document.getElementById("nav").innerHTML = TABS.map(([key, label]) => {
-    let count = 0;
+    let count = 0, gold = false;
     if (isAdmin()) {
       if (key === "storico") count = state.pending.length;
       if (key === "rosa") count = state.requests.length;
     }
-    const badge = count ? `<span class="badge">${count}</span>` : "";
+    if (key === "tornei") {
+      const n = state.tournaments.filter((x) => x.status === "signup").length;
+      if (n) { count = n; gold = true; }
+    }
+    const badge = count ? `<span class="badge${gold ? " gold" : ""}">${count}</span>` : "";
     return `<button data-tab="${key}" class="${state.tab === key ? "active" : ""}">${label}${badge}</button>`;
   }).join("");
   document.getElementById("season-eyebrow").textContent =
@@ -1757,7 +1805,13 @@ function render() {
       </div>`;
     };
 
-    let out = ranked.map((p, i) => rowHTML(p, i, null)).join("");
+    const signupTs = state.tournaments.filter((x) => x.status === "signup");
+    const signupNote = signupTs.length
+      ? `<div class="signup-note" data-tab="tornei">📋 ${signupTs.length === 1
+          ? `Iscrizioni aperte per "${esc(signupTs[0].name)}"`
+          : `${signupTs.length} tornei con iscrizioni aperte`} · tocca per iscriverti</div>`
+      : "";
+    let out = signupNote + ranked.map((p, i) => rowHTML(p, i, null)).join("");
     if (!ranked.length)
       out += `<div class="empty">Nessuno si è ancora qualificato: servono ${QUAL.games} partite, ${QUAL.opps} avversari e ${QUAL.mates} compagni diversi.</div>`;
     if (unranked.length) {
@@ -2076,19 +2130,34 @@ function render() {
         .filter((p) => !inT.includes(p.id))
         .map((p) => `<option value="${p.id}">${esc(p.name)} (${p.elo})</option>`).join("");
       const teamRows = t.teams.map((team, ti) => {
-        const slotHTML = (key, slot) => team[key]
-          ? `<div class="b-team">${esc(nameOf(team[key]))}<span class="b-score" style="font-size:12px;opacity:0.6">✓ confermato</span></div>`
-          : `<div class="b-record" style="margin-top:2px">
-              <select id="su-${t.id}-${ti}-${slot}" style="flex:1;padding:7px 8px;border:none;border-radius:7px;background:var(--cream);color:#1c1c1c;font-size:13px;min-width:0">
-                <option value="">— posto libero —</option>${opts}
-              </select>
-              <button data-claim="${t.id}|${ti}|${slot}">Conferma</button>
-            </div>`;
+        const slotHTML = (key, slot) => {
+          if (isAdmin()) {
+            const cur = team[key];
+            const adminOpts = [...players].sort(byName)
+              .filter((p) => !inT.includes(p.id) || p.id === cur)
+              .map((p) => `<option value="${p.id}" ${p.id === cur ? "selected" : ""}>${esc(p.name)} (${p.elo})</option>`).join("");
+            return `<select data-adminslot="${t.id}|${ti}|${slot}" style="width:100%;margin-top:2px;padding:7px 8px;border:none;border-radius:7px;background:var(--cream);color:#1c1c1c;font-size:13px">
+              <option value="">— posto libero —</option>${adminOpts}
+            </select>`;
+          }
+          return team[key]
+            ? `<div class="b-team">${esc(nameOf(team[key]))}<span class="b-score" style="font-size:12px;opacity:0.6">✓ confermato</span></div>`
+            : `<div class="b-record" style="margin-top:2px">
+                <select id="su-${t.id}-${ti}-${slot}" style="flex:1;padding:7px 8px;border:none;border-radius:7px;background:var(--cream);color:#1c1c1c;font-size:13px;min-width:0">
+                  <option value="">— posto libero —</option>${opts}
+                </select>
+                <button data-claim="${t.id}|${ti}|${slot}">Conferma</button>
+              </div>`;
+        };
+        const delPair = isAdmin() && t.teams.length > 2
+          ? `<button class="del-btn" data-delpair="${t.id}|${ti}" style="float:right;padding:3px 7px;font-size:12px">✕</button>` : "";
         return `<div class="b-match">
-          <div class="meta" style="margin-bottom:2px">COPPIA ${ti + 1}</div>
+          <div class="meta" style="margin-bottom:2px">COPPIA ${ti + 1}${delPair}</div>
           ${slotHTML("p1", 0)}${slotHTML("p2", 1)}
         </div>`;
       }).join("");
+      const addPairBtn = isAdmin()
+        ? `<button class="undo" data-addpair="${t.id}" style="margin:6px 0 0">+ Aggiungi coppia</button>` : "";
       const startBtn = isAdmin()
         ? `<button class="cta" data-starttournament="${t.id}" style="font-size:14px;padding:11px 0;margin-top:8px" ${filled === total ? "" : "disabled"}>
             ${filled === total ? "Avvia torneo" : `Avvia torneo (${filled}/${total} posti)`}
@@ -2096,8 +2165,9 @@ function render() {
       html += `<div class="info-card">
         <h3>${esc(t.name).toUpperCase()}${isAdmin() ? `<button class="del-btn" data-deltournament="${t.id}" title="Elimina" style="float:right">✕</button>` : ""}</h3>
         <p class="meta" style="margin-bottom:6px">${esc(seasonName(t.season_id))} · ${t.teams.length} coppie · ${filled}/${total} posti · ${(t.format ?? "elim") === "girone" ? "girone" : "eliminazione"}${t.rated === false ? " · non vale per l'ELO" : ""}</p>
-        <p class="meta" style="margin-bottom:8px">Scegli un posto libero e conferma: l'iscrizione non si può più cambiare.</p>
+        <p class="meta" style="margin-bottom:8px">Scegli un posto libero e conferma: l'iscrizione non si può più cambiare${isAdmin() ? " (tu da admin puoi modificare tutto)" : ""}.</p>
         ${teamRows}
+        ${addPairBtn}
         ${startBtn}
       </div>`;
     }
@@ -2605,6 +2675,18 @@ document.addEventListener("click", async (e) => {
     if (!confirm(`Confermare ${nameOf(pid)} in questo posto? Non si potrà più cambiare.`)) return;
     return withBusy(() => claimSlot(tid, Number(ti), Number(slot), pid));
   }
+  if (t.dataset.addpair) {
+    return withBusy(() => addSignupPair(t.dataset.addpair));
+  }
+  if (t.dataset.delpair) {
+    const [tid, ti] = t.dataset.delpair.split("|");
+    const tor = state.tournaments.find((x) => x.id === tid);
+    const pair = tor?.teams[Number(ti)];
+    if (!pair) return;
+    const who = [pair.p1, pair.p2].filter(Boolean).map(nameOf).join(" + ");
+    if (!confirm(who ? `Rimuovere la coppia con ${who}?` : "Rimuovere questa coppia vuota?")) return;
+    return withBusy(() => removeSignupPair(tid, Number(ti)));
+  }
   if (t.dataset.starttournament) {
     const tor = state.tournaments.find((x) => x.id === t.dataset.starttournament);
     if (!tor) return;
@@ -2688,6 +2770,11 @@ document.addEventListener("change", (e) => {
   if (t.dataset.h2h) {
     state.h2hId = t.value || null;
     render();
+    return;
+  }
+  if (t.dataset.adminslot) {
+    const [tid, ti, slot] = t.dataset.adminslot.split("|");
+    withBusy(() => setSignupSlot(tid, Number(ti), Number(slot), t.value || null));
     return;
   }
   if (t.dataset.seasonend) {
