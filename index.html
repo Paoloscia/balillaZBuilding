@@ -617,7 +617,7 @@ const state = {
   profileId: null,
   present: [],
   suggestedList: [], // formazioni consigliate usate, col relativo bonus
-  mode: "1v1",
+  mode: "2v2",
   noScore: false,
   winnerSide: null,
   teamA: ["", ""],
@@ -2035,6 +2035,7 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.scoremode) {
     state.noScore = t.dataset.scoremode === "noscore";
     state.winnerSide = null;
+    if (state.noScore) toast("Occhio: senza punteggio la partita vale ×0.5, la metà di una vittoria di misura", false);
     render();
     return;
   }
