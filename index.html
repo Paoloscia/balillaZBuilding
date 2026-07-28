@@ -651,6 +651,7 @@ const esc = (s) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const byId = (id) => state.players.find((p) => p.id === id);
+const byName = (a, b) => a.name.localeCompare(b.name, "it", { sensitivity: "base" });
 const nameOf = (id) => byId(id)?.name ?? "?";
 const seasonById = (id) => state.seasons.find((s) => s.id === id);
 const seasonName = (id) => seasonById(id)?.name ?? "?";
@@ -1383,7 +1384,12 @@ function renderProfile(pid) {
     </div>
     ${d.curve.length >= 2 ? `<div class="info-card"><h3>ANDAMENTO ELO</h3>${sparklineSVG(d.curve)}</div>` : ""}
     <div class="info-card"><h3>BACHECA</h3>${chips}</div>
-    <div class="info-card"><h3>STATISTICHE</h3>${stats}</div>`;
+    <div class="info-card"><h3>STATISTICHE</h3>${stats}</div>
+    <div class="section-label" style="margin-top:22px">LE SUE PARTITE</div>
+    ${[...d.ms].reverse().slice(0, 20).map((m) =>
+      matchRowHTML(m, { showSeason: state.seasons.length > 1 })).join("")
+      || `<div class="empty">Nessuna partita recente.</div>`}
+    ${d.ms.length > 20 ? `<div class="foot-note">Mostrate le ultime 20 di ${d.ms.length} partite recenti.</div>` : ""}`;
 }
 
 function render() {
@@ -1460,7 +1466,7 @@ function render() {
     const teamCard = (team, cls, label, score, side) => {
       const taken = new Set([...state.teamA, ...state.teamB].filter(Boolean));
       const selects = Array.from({ length: size }).map((_, i) => {
-        const opts = players.map((p) => {
+        const opts = [...players].sort(byName).map((p) => {
           const dis = taken.has(p.id) && team[i] !== p.id ? "disabled" : "";
           const sel = team[i] === p.id ? "selected" : "";
           return `<option value="${p.id}" ${dis} ${sel}>${esc(p.name)} (${p.elo})</option>`;
@@ -1529,7 +1535,7 @@ function render() {
     }
 
     const presentSet = new Set(state.present);
-    const chips = players.map((p) =>
+    const chips = [...players].sort(byName).map((p) =>
       `<button class="chip ${presentSet.has(p.id) ? "chip-on" : ""}" data-present="${p.id}">${esc(p.name)}</button>`
     ).join("");
     let lineupHTML = "";
@@ -1663,7 +1669,7 @@ function render() {
         const usedIds = new Set(state.tPairs.flat().filter(Boolean));
         const pairRows = state.tPairs.map((pair, pi) => {
           const sel = (slot) => {
-            const opts = players.map((p) => {
+            const opts = [...players].sort(byName).map((p) => {
               const dis = usedIds.has(p.id) && pair[slot] !== p.id ? "disabled" : "";
               const s = pair[slot] === p.id ? "selected" : "";
               return `<option value="${p.id}" ${dis} ${s}>${esc(p.name)} (${p.elo})</option>`;
@@ -1924,7 +1930,7 @@ function render() {
 
   // ---------- GIOCATORI ----------
   if (tab === "rosa") {
-    const rows = players.map((p) => {
+    const rows = [...players].sort(byName).map((p) => {
       const role = roleOf(p);
       const roleUI = isAdmin()
         ? `<select class="role-select" data-roleplayer="${p.id}">
