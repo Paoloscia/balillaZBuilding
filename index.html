@@ -1519,7 +1519,7 @@ function render() {
 
     let hint;
     if (state.noScore) {
-      hint = "Senza punteggio la partita vale circa la metà di una vittoria di misura.";
+      hint = "Tocca Vittoria sulla squadra che ha vinto.";
     } else if (state.scoreA === state.scoreB && playersOk) {
       hint = "Il pareggio non esiste al balilla: si gioca la palla decisiva.";
     } else if (isAdmin()) {
@@ -1601,6 +1601,7 @@ function render() {
         <button data-scoremode="score" class="${!state.noScore ? "active" : ""}" style="font-size:12px">Con punteggio</button>
         <button data-scoremode="noscore" class="${state.noScore ? "active" : ""}" style="font-size:12px">Solo chi ha vinto</button>
       </div>
+      ${state.noScore ? `<div class="toast err" style="margin-top:-4px">Attenzione: senza punteggio la partita vale ×0.5, la metà di una vittoria di misura</div>` : ""}
       <div class="teams">
         ${teamCard(state.teamA, "red", "ROSSI", state.scoreA, "A")}
         <div class="vs">VS</div>
@@ -2035,7 +2036,6 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.scoremode) {
     state.noScore = t.dataset.scoremode === "noscore";
     state.winnerSide = null;
-    if (state.noScore) toast("Occhio: senza punteggio la partita vale ×0.5, la metà di una vittoria di misura", false);
     render();
     return;
   }
