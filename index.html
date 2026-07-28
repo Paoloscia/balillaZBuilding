@@ -253,6 +253,19 @@
     font-size: 14px;
   }
   .match-row.pending { border: 1px dashed rgba(232,179,65,0.5); }
+  .match-row.boosted { border-left: 3px solid var(--gold); }
+  .boost-badge {
+    display: inline-block;
+    background: var(--gold);
+    color: #241505;
+    font-weight: 800;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    border-radius: 12px;
+    padding: 4px 10px;
+    box-shadow: 0 0 12px rgba(232,179,65,0.45);
+  }
+  .cta-boost { box-shadow: 0 0 16px rgba(232,179,65,0.6); }
   .match-row .team-a { color: var(--red-light); font-weight: 700; }
   .match-row .team-b { color: var(--blue-light); font-weight: 700; }
   .match-score { font-family: var(--font-display); font-size: 20px; white-space: nowrap; }
@@ -415,6 +428,14 @@
     padding: 5px 10px;
     font-size: 12px;
     margin: 0 6px 6px 0;
+    color: var(--cream);
+  }
+  button.chip { cursor: pointer; }
+  .chip-on {
+    background: var(--gold);
+    color: #241505;
+    border-color: var(--gold);
+    font-weight: 700;
   }
 
   .auth-box {
@@ -474,6 +495,7 @@ const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const K = 32;
 const HANDICAP = 0.25;     // quanto pesa lo sbilanciamento interno della coppia
 const NO_SCORE_BASE = 0.5; // valore di una partita senza punteggio (10-9 ≈ 0.7)
+const SUGGESTED_BOOST = 1.25; // le partite consigliate dall'app pesano di piu'
 
 const expectedScore = (ra, rb) => 1 / (1 + Math.pow(10, (rb - ra) / 400));
 
@@ -498,7 +520,7 @@ function teamRating(ids) {
   return (r1 + r2) / 2 - HANDICAP * Math.abs(r1 - r2);
 }
 
-function computeMatch(idsA, idsB, scoreA, scoreB, winnerSide) {
+function computeMatch(idsA, idsB, scoreA, scoreB, winnerSide, refDate = null, boosted = false) {
   const size = idsA.length;
   const ratingA = teamRating(idsA);
   const ratingB = teamRating(idsB);
@@ -512,7 +534,9 @@ function computeMatch(idsA, idsB, scoreA, scoreB, winnerSide) {
     : movMultiplier(Math.abs(scoreA - scoreB), winnerElo, loserElo);
 
   const expA = expectedScore(ratingA, ratingB);
-  const totalA = K * mov * ((aWins ? 1 : 0) - expA) * size;
+  const totalA = K * mov * ((aWins ? 1 : 0) - expA) * size
+    * repetitionFactor(idsA, idsB, refDate ?? Date.now())
+    * (boosted ? SUGGESTED_BOOST : 1);
 
   const deltas = {};
   const assign = (ids, total, winning) => {
@@ -590,6 +614,8 @@ const state = {
   tName: "",
   tFormat: "elim",
   profileId: null,
+  present: [],
+  suggested: null, // ultima formazione consigliata usata
   mode: "1v1",
   noScore: false,
   winnerSide: null,
@@ -705,8 +731,8 @@ async function applyDeltas(deltas, winners, sign = 1) {
 }
 
 // crea una partita confermata (usata dal form e dai tornei)
-async function insertConfirmedMatch(idsA, idsB, scoreA, scoreB, winnerSide, seasonId) {
-  const { deltas, winners, pre } = computeMatch(idsA, idsB, scoreA, scoreB, winnerSide);
+async function insertConfirmedMatch(idsA, idsB, scoreA, scoreB, winnerSide, seasonId, boosted = false) {
+  const { deltas, winners, pre } = computeMatch(idsA, idsB, scoreA, scoreB, winnerSide, null, boosted);
   const ok = await applyDeltas(deltas, winners);
   const ins = await sb.from("matches").insert({
     mode: idsA.length === 1 ? "1v1" : "2v2",
@@ -714,11 +740,20 @@ async function insertConfirmedMatch(idsA, idsB, scoreA, scoreB, winnerSide, seas
     score_a: scoreA, score_b: scoreB,
     winner_side: winnerSide,
     season_id: seasonId,
-    deltas, pre, winners,
+    deltas, pre, winners, boosted,
     status: "confirmed",
     confirmed_at: new Date().toISOString(),
   });
   return ok && !ins.error;
+}
+
+function matchesSuggestion() {
+  const s = state.suggested;
+  if (!s || state.mode !== "2v2") return false;
+  const a = state.teamA.slice(0, 2), b = state.teamB.slice(0, 2);
+  if (a.some((x) => !x) || b.some((x) => !x)) return false;
+  const setEq = (x, y) => [...x].sort().join() === [...y].sort().join();
+  return (setEq(a, s.a) && setEq(b, s.b)) || (setEq(a, s.b) && setEq(b, s.a));
 }
 
 async function recordMatch() {
@@ -731,9 +766,10 @@ async function recordMatch() {
   const sa = noScore ? null : state.scoreA;
   const sbv = noScore ? null : state.scoreB;
   const ws = noScore ? state.winnerSide : null;
+  const boosted = matchesSuggestion();
 
   if (isAdmin()) {
-    const ok = await insertConfirmedMatch(idsA, idsB, sa, sbv, ws, season.id);
+    const ok = await insertConfirmedMatch(idsA, idsB, sa, sbv, ws, season.id, boosted);
     if (!ok) { toast("Errore di salvataggio, ricarica la pagina", false); return; }
     toast("Partita registrata");
     state.tab = "classifica";
@@ -744,6 +780,7 @@ async function recordMatch() {
       score_a: sa, score_b: sbv,
       winner_side: ws,
       season_id: season.id,
+      boosted,
       status: "pending",
     });
     if (ins.error) { toast("Errore di invio, riprova", false); return; }
@@ -756,6 +793,7 @@ async function recordMatch() {
   state.scoreA = 0;
   state.scoreB = 0;
   state.winnerSide = null;
+  state.suggested = null;
 }
 
 async function confirmMatch(id) {
@@ -771,7 +809,7 @@ async function confirmMatch(id) {
     return;
   }
   const { deltas, winners, pre } = computeMatch(
-    m.team_a, m.team_b, m.score_a, m.score_b, m.winner_side
+    m.team_a, m.team_b, m.score_a, m.score_b, m.winner_side, m.created_at, m.boosted ?? false
   );
   const ok = await applyDeltas(deltas, winners);
   const upd = await sb.from("matches").update({
@@ -994,16 +1032,12 @@ function gironeHTML(t, canRecord) {
   return out;
 }
 
-// ---------- Partite consigliate (2v2) ----------
-// Solo chi gioca in questo periodo (ultimi 60 giorni). Premia sfide mai
-// giocate e coppie inedite, divide le coppie abituali, preferisce chi
-// gioca spesso e squadre equilibrate.
-function suggestedMatches() {
-  const now = Date.now();
-  const MAX_AGE = 60 * 24 * 3600 * 1000;
-  const keyOf = (a, b) => (a < b ? a + "|" + b : b + "|" + a);
-  const games = {}, last = {}, faced = {}, teamed = {};
+// ---------- Storico incroci, consigliate e formazioni ----------
+const PAIRINGS = [[[0, 1], [2, 3]], [[0, 2], [1, 3]], [[0, 3], [1, 2]]];
+const pairKey = (a, b) => (a < b ? a + "|" + b : b + "|" + a);
 
+function historyMaps() {
+  const games = {}, last = {}, faced = {}, teamed = {};
   for (const m of state.matches) {
     const dt = new Date(m.created_at).getTime();
     for (const id of [...m.team_a, ...m.team_b]) {
@@ -1011,54 +1045,79 @@ function suggestedMatches() {
       if (!last[id] || dt > last[id]) last[id] = dt;
     }
     for (const a of m.team_a) for (const b of m.team_b) {
-      const k = keyOf(a, b);
+      const k = pairKey(a, b);
       faced[k] = (faced[k] ?? 0) + 1;
     }
-    if (m.team_a.length === 2) { const k = keyOf(m.team_a[0], m.team_a[1]); teamed[k] = (teamed[k] ?? 0) + 1; }
-    if (m.team_b.length === 2) { const k = keyOf(m.team_b[0], m.team_b[1]); teamed[k] = (teamed[k] ?? 0) + 1; }
+    if (m.team_a.length === 2) { const k = pairKey(m.team_a[0], m.team_a[1]); teamed[k] = (teamed[k] ?? 0) + 1; }
+    if (m.team_b.length === 2) { const k = pairKey(m.team_b[0], m.team_b[1]); teamed[k] = (teamed[k] ?? 0) + 1; }
   }
+  return { games, last, faced, teamed };
+}
 
-  const active = state.players.filter((p) => last[p.id] && now - last[p.id] <= MAX_AGE);
-  if (active.length < 4) return [];
+// Dalla terza partita dello stesso giorno tra le stesse squadre il delta si dimezza:
+// le maratone contano, ma non spostano montagne di punti.
+function repetitionFactor(idsA, idsB, refDate) {
+  const day = new Date(refDate).toDateString();
+  const mk = (a, b) => {
+    const ta = [...a].sort().join(",");
+    const tb = [...b].sort().join(",");
+    return ta < tb ? ta + "|" + tb : tb + "|" + ta;
+  };
+  const k = mk(idsA, idsB);
+  const prior = state.matches.filter((m) =>
+    new Date(m.created_at).toDateString() === day && mk(m.team_a, m.team_b) === k
+  ).length;
+  return prior >= 2 ? 0.5 : 1;
+}
 
+function scorePairing(A, B, maps, opts = {}) {
+  const { requireNew = true, balanceWeight = 0.1, activityWeight = 1, ignoreRoles = false } = opts;
+  const { games, faced, teamed } = maps;
+  if (!ignoreRoles) {
+    const doubleAttack = (T) => roleOf(T[0]) === "attaccante" && roleOf(T[1]) === "attaccante";
+    if (doubleAttack(A) || doubleAttack(B)) return null;
+  }
+  const compl = [A, B].filter((T) => {
+    const r = T.map(roleOf);
+    return r.includes("attaccante") && r.includes("difensore");
+  }).length;
+  const cross = [[A[0], B[0]], [A[0], B[1]], [A[1], B[0]], [A[1], B[1]]];
+  const newFaced = cross.filter(([x, y]) => !faced[pairKey(x.id, y.id)]).length;
+  const newTeams =
+    (teamed[pairKey(A[0].id, A[1].id)] ? 0 : 1) +
+    (teamed[pairKey(B[0].id, B[1].id)] ? 0 : 1);
+  if (requireNew && newFaced === 0 && newTeams === 0) return null;
+  const habit =
+    (teamed[pairKey(A[0].id, A[1].id)] ?? 0) +
+    (teamed[pairKey(B[0].id, B[1].id)] ?? 0);
+  const activity = [...A, ...B].reduce((s, p) => s + (games[p.id] ?? 0), 0);
   const r2 = (a, b) => (a.elo + b.elo) / 2 - HANDICAP * Math.abs(a.elo - b.elo);
-  const cands = [];
-  const PAIRINGS = [[[0, 1], [2, 3]], [[0, 2], [1, 3]], [[0, 3], [1, 2]]];
+  const gap = Math.abs(r2(A[0], A[1]) - r2(B[0], B[1]));
+  const score =
+    newFaced * 30 + newTeams * 20 + compl * 8
+    - Math.min(habit, 10) * 6
+    + Math.min(activity, 40) * activityWeight
+    - gap * balanceWeight;
+  return { A, B, newFaced, newTeams, gap, score };
+}
 
+function suggestedMatches() {
+  const now = Date.now();
+  const MAX_AGE = 60 * 24 * 3600 * 1000;
+  const maps = historyMaps();
+  const active = state.players.filter((p) => maps.last[p.id] && now - maps.last[p.id] <= MAX_AGE);
+  if (active.length < 4) return [];
+  const cands = [];
   for (let i = 0; i < active.length; i++)
     for (let j = i + 1; j < active.length; j++)
       for (let k = j + 1; k < active.length; k++)
         for (let l = k + 1; l < active.length; l++) {
           const q = [active[i], active[j], active[k], active[l]];
           for (const [[a1, a2], [b1, b2]] of PAIRINGS) {
-            const A = [q[a1], q[a2]], B = [q[b1], q[b2]];
-            const doubleAttack = (T) => roleOf(T[0]) === "attaccante" && roleOf(T[1]) === "attaccante";
-            if (doubleAttack(A) || doubleAttack(B)) continue; // mai due attaccanti insieme
-            const compl = [A, B].filter((T) => {
-              const r = T.map(roleOf);
-              return r.includes("attaccante") && r.includes("difensore");
-            }).length;
-            const cross = [[A[0], B[0]], [A[0], B[1]], [A[1], B[0]], [A[1], B[1]]];
-            const newFaced = cross.filter(([x, y]) => !faced[keyOf(x.id, y.id)]).length;
-            const newTeams =
-              (teamed[keyOf(A[0].id, A[1].id)] ? 0 : 1) +
-              (teamed[keyOf(B[0].id, B[1].id)] ? 0 : 1);
-            if (newFaced === 0 && newTeams === 0) continue; // niente di nuovo
-            const habit =
-              (teamed[keyOf(A[0].id, A[1].id)] ?? 0) +
-              (teamed[keyOf(B[0].id, B[1].id)] ?? 0);
-            const activity = q.reduce((s, p) => s + (games[p.id] ?? 0), 0);
-            const gap = Math.abs(r2(A[0], A[1]) - r2(B[0], B[1]));
-            const score =
-              newFaced * 30 + newTeams * 20
-              + compl * 8
-              - Math.min(habit, 10) * 6
-              + Math.min(activity, 40)
-              - gap * 0.1;
-            cands.push({ A, B, newFaced, newTeams, score });
+            const c = scorePairing([q[a1], q[a2]], [q[b1], q[b2]], maps);
+            if (c) cands.push(c);
           }
         }
-
   cands.sort((x, y) => y.score - x.score);
   const out = [];
   for (const c of cands) {
@@ -1068,6 +1127,52 @@ function suggestedMatches() {
     if (out.length === 3) break;
   }
   return out;
+}
+
+// Le due coppie migliori tra i presenti: equilibrio prima di tutto,
+// precedenza a chi ha giocato meno, ruoli rispettati quando possibile.
+function bestLineup(ids) {
+  const ps = ids.map(byId).filter(Boolean);
+  if (ps.length < 4) return null;
+  const maps = historyMaps();
+  const evalAll = (ignoreRoles) => {
+    let best = null;
+    for (let i = 0; i < ps.length; i++)
+      for (let j = i + 1; j < ps.length; j++)
+        for (let k = j + 1; k < ps.length; k++)
+          for (let l = k + 1; l < ps.length; l++) {
+            const q = [ps[i], ps[j], ps[k], ps[l]];
+            for (const [[a1, a2], [b1, b2]] of PAIRINGS) {
+              const c = scorePairing([q[a1], q[a2]], [q[b1], q[b2]], maps,
+                { requireNew: false, balanceWeight: 0.6, activityWeight: -0.6, ignoreRoles });
+              if (c && (!best || c.score > best.score)) best = c;
+            }
+          }
+    return best;
+  };
+  let best = evalAll(false);
+  let ignoredRoles = false;
+  if (!best) { best = evalAll(true); ignoredRoles = true; }
+  return best ? { ...best, ignoredRoles } : null;
+}
+
+// Requisiti per comparire in classifica (stagione corrente).
+const QUAL = { games: 10, opps: 6, mates: 3 };
+function qualification(p) {
+  const sid = activeSeason()?.id;
+  const opps = new Set(), mates = new Set();
+  for (const m of state.matches) {
+    if (sid && m.season_id !== sid) continue;
+    const inA = m.team_a.includes(p.id), inB = m.team_b.includes(p.id);
+    if (!inA && !inB) continue;
+    for (const o of (inA ? m.team_b : m.team_a)) opps.add(o);
+    for (const mt of (inA ? m.team_a : m.team_b)) if (mt !== p.id) mates.add(mt);
+  }
+  const games = p.wins + p.losses;
+  return {
+    games, opps: opps.size, mates: mates.size,
+    ok: games >= QUAL.games && opps.size >= QUAL.opps && mates.size >= QUAL.mates,
+  };
 }
 
 // ---------- UI ----------
@@ -1127,12 +1232,12 @@ function matchRowHTML(m, { pending = false, actions = false, showSeason = false 
        <span style="opacity:0.5"> – </span>
        <span class="${!aWon ? "win" : ""}">${m.score_b}</span>`;
   const seasonTag = showSeason ? ` · ${esc(seasonName(m.season_id))}` : "";
-  return `<div class="match-row ${pending ? "pending" : ""}">
+  return `<div class="match-row ${pending ? "pending" : ""}${m.boosted ? " boosted" : ""}">
     <div style="flex:1">
       <span class="team-a">${m.team_a.map((id) => esc(nameOf(id))).join(" + ")}</span>
       <span style="opacity:0.7"> vs </span>
       <span class="team-b">${m.team_b.map((id) => esc(nameOf(id))).join(" + ")}</span>
-      <div class="meta">${fmtDate(m.created_at)} · ${m.mode}${noScore ? " · senza punteggio" : ""}${seasonTag}</div>
+      <div class="meta">${fmtDate(m.created_at)} · ${m.mode}${noScore ? " · senza punteggio" : ""}${m.boosted ? ` · <span style="color:var(--gold);font-weight:700">⭐ ×${SUGGESTED_BOOST}</span>` : ""}${seasonTag}</div>
       <div class="meta">${deltaStr}</div>
       ${btns}
     </div>
@@ -1285,23 +1390,41 @@ function render() {
       app.innerHTML = `<div class="empty">Nessun giocatore in rosa. Aggiungi i primi nella scheda Giocatori.</div>`;
       return;
     }
-    const ranked = [...players].sort((a, b) => b.elo - a.elo);
-    app.innerHTML = ranked.map((p, i) => {
+    const sorted = [...players].sort((a, b) => b.elo - a.elo);
+    const quals = new Map(sorted.map((p) => [p.id, qualification(p)]));
+    const ranked = sorted.filter((p) => quals.get(p.id).ok);
+    const unranked = sorted.filter((p) => !quals.get(p.id).ok);
+
+    const rowHTML = (p, i, q) => {
       const tot = p.wins + p.losses;
       const pct = tot ? Math.round((p.wins / tot) * 100) : 0;
       const form = formOf(p.id, season?.id ?? null);
       const dots = form.map((w) => `<span class="dot ${w ? "w" : "l"}"></span>`).join("");
       const streak = streakOf(form);
-      return `<div class="row ${i === 0 ? "first" : ""}" data-profile="${p.id}" style="cursor:pointer">
-        <div class="rank ${i === 0 ? "gold" : ""}">${i + 1}</div>
+      const missing = q
+        ? `<div class="meta">${q.games}/${QUAL.games} partite · ${q.opps}/${QUAL.opps} avversari · ${q.mates}/${QUAL.mates} compagni</div>`
+        : "";
+      return `<div class="row ${i === 0 ? "first" : ""}" data-profile="${p.id}" style="cursor:pointer${q ? ";opacity:0.7" : ""}">
+        <div class="rank ${i === 0 ? "gold" : ""}">${q ? "–" : i + 1}</div>
         <div style="flex:1">
           <div class="player-name">${esc(p.name)}</div>
           <div class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}%` : ""}${streak ? " · " + streak : ""}</div>
+          ${missing}
           ${form.length ? `<div style="margin-top:4px">${dots}</div>` : ""}
         </div>
-        <div class="elo">${p.elo}</div>
+        <div class="elo">${q ? "~" : ""}${p.elo}</div>
       </div>`;
-    }).join("");
+    };
+
+    let out = ranked.map((p, i) => rowHTML(p, i, null)).join("");
+    if (!ranked.length)
+      out += `<div class="empty">Nessuno si è ancora qualificato: servono ${QUAL.games} partite, ${QUAL.opps} avversari e ${QUAL.mates} compagni diversi.</div>`;
+    if (unranked.length) {
+      out += `<div class="section-label" style="margin-top:18px">NON CLASSIFICATI</div>
+        <div class="meta" style="margin-bottom:8px">ELO provvisorio: per la classifica servono ${QUAL.games} partite, ${QUAL.opps} avversari e ${QUAL.mates} compagni diversi nella stagione.</div>`;
+      out += unranked.map((p) => rowHTML(p, -1, quals.get(p.id))).join("");
+    }
+    app.innerHTML = out;
     return;
   }
 
@@ -1350,6 +1473,7 @@ function render() {
       </div>`;
     };
 
+    const isSugg = matchesSuggestion();
     let forecast = "";
     if (playersOk) {
       const fIdsA = state.teamA.slice(0, size);
@@ -1362,7 +1486,8 @@ function render() {
           fIdsA, fIdsB,
           state.noScore ? null : state.scoreA,
           state.noScore ? null : state.scoreB,
-          state.noScore ? state.winnerSide : null
+          state.noScore ? state.winnerSide : null,
+          null, isSugg
         );
         deltaLine = `<div class="meta" style="margin-top:4px">Se va così: ` +
           [...fIdsA, ...fIdsB].map((id) =>
@@ -1373,6 +1498,7 @@ function render() {
         <span style="color:var(--red-light);font-weight:700">Rossi ${pA}%</span>
         <span style="opacity:0.5"> · </span>
         <span style="color:var(--blue-light);font-weight:700">Blu ${100 - pA}%</span>
+        ${isSugg ? `<div style="margin-top:6px"><span class="boost-badge">⭐ CONSIGLIATA · DELTA ×${SUGGESTED_BOOST}</span></div>` : ""}
         ${deltaLine}
       </div>`;
     }
@@ -1388,6 +1514,35 @@ function render() {
       hint = "La partita verrà conteggiata dopo la conferma di un admin.";
     }
 
+    const presentSet = new Set(state.present);
+    const chips = players.map((p) =>
+      `<button class="chip ${presentSet.has(p.id) ? "chip-on" : ""}" data-present="${p.id}">${esc(p.name)}</button>`
+    ).join("");
+    let lineupHTML = "";
+    if (state.present.length >= 4) {
+      const best = bestLineup(state.present);
+      if (best) {
+        const pA = Math.round(expectedScore(
+          teamRating(best.A.map((p) => p.id)),
+          teamRating(best.B.map((p) => p.id))
+        ) * 100);
+        lineupHTML = `<div class="row" style="border:1px solid var(--gold)">
+          <div style="flex:1">
+            <div class="player-name" style="font-size:14px">${esc(best.A[0].name)} + ${esc(best.A[1].name)} <span style="opacity:0.6">vs</span> ${esc(best.B[0].name)} + ${esc(best.B[1].name)}</div>
+            <div class="meta">${pA}% – ${100 - pA}%${state.present.length >= 8 ? "" : " · bonus ×" + SUGGESTED_BOOST + " da 8 presenti"}${best.ignoredRoles ? " · nessuna combinazione rispetta i ruoli" : ""}</div>
+            ${state.present.length >= 8 ? `<div style="margin-top:4px"><span class="boost-badge">⭐ VALE ×${SUGGESTED_BOOST}</span></div>` : ""}
+          </div>
+          <button class="use-btn" data-suggest="${best.A[0].id}|${best.A[1].id}|${best.B[0].id}|${best.B[1].id}" data-boost="${state.present.length >= 8 ? 1 : 0}">Usa</button>
+        </div>`;
+      }
+    } else if (state.present.length > 0) {
+      lineupHTML = `<div class="meta" style="margin-bottom:8px">Seleziona almeno 4 presenti.</div>`;
+    }
+    const whoHTML = `<div class="section-label" style="margin-top:26px">CHI C'È OGGI</div>
+      <div class="meta" style="margin-bottom:8px">Seleziona i presenti: l'app propone le due coppie migliori per equilibrio e mescolamento.</div>
+      <div style="margin-bottom:8px">${chips}</div>
+      ${lineupHTML}`;
+
     const sugg = suggestedMatches();
     const suggHTML = sugg.length
       ? `<div class="section-label" style="margin-top:26px">PARTITE CONSIGLIATE</div>
@@ -1400,6 +1555,7 @@ function render() {
             <div style="flex:1">
               <div class="player-name" style="font-size:14px">${esc(A[0].name)} + ${esc(A[1].name)} <span style="opacity:0.6">vs</span> ${esc(B[0].name)} + ${esc(B[1].name)}</div>
               <div class="meta">${bits.join(" · ")}</div>
+              <div style="margin-top:4px"><span class="boost-badge">⭐ VALE ×${SUGGESTED_BOOST}</span></div>
             </div>
             <button class="use-btn" data-suggest="${A[0].id}|${A[1].id}|${B[0].id}|${B[1].id}">Usa</button>
           </div>`;
@@ -1422,9 +1578,10 @@ function render() {
       </div>
       ${forecast}
       <div class="hint">${hint}</div>
-      <button class="cta" id="save-match" ${valid && !state.busy ? "" : "disabled"}>
-        ${isAdmin() ? "Registra partita" : "Invia partita"}
+      <button class="cta${isSugg ? " cta-boost" : ""}" id="save-match" ${valid && !state.busy ? "" : "disabled"}>
+        ${isAdmin() ? "Registra partita" : "Invia partita"}${isSugg ? " · ⭐ ×" + SUGGESTED_BOOST : ""}
       </button>
+      ${whoHTML}
       ${suggHTML}`;
     return;
   }
@@ -1677,6 +1834,8 @@ function render() {
         <div class="formula">mov = ln(diffGol + 1) × 2.2 / (diffElo × 0.001 + 2.2)</div>
         <p>Un 10-9 vale circa <b>0.7×</b> il valore base, un 10-0 circa <b>2.4×</b>. La seconda parte della formula smorza i cappotti del favorito e amplifica quelli dello sfavorito, così i più forti non gonfiano il rating massacrando gli ultimi.</p>
         <p>Se il punteggio non ve lo ricordate, si può registrare solo chi ha vinto: la partita vale <b>0.5×</b>, meno di una vittoria di misura, perché senza il punteggio il sistema ha meno informazione ed è prudente.</p>
+        <p>Le maratone contano meno: <b>dalla terza partita dello stesso giorno tra le stesse squadre il delta si dimezza</b>. Le prime due valgono piene, poi rigiocare all'infinito lo stesso incrocio smette di spostare punti.</p>
+        <p>Al contrario, le <b>partite consigliate</b> dall'app valgono <b>×1.25</b>: sono gli incroci che danno più informazione al sistema. Il bonus vale solo se giocate la formazione esatta suggerita. Per "Chi c'è oggi" serve che i presenti selezionati siano <b>almeno 8</b>: con pochi presenti non c'è nessuna scelta da premiare.</p>
         <p><b>3. Il tuo compagno</b> (solo 2v2, vedi sotto).</p>
       </div>
 
@@ -1710,6 +1869,11 @@ function render() {
       <div class="info-card">
         <h3>PARTITE CONSIGLIATE</h3>
         <p>Nella scheda Partita trovi 2v2 suggeriti tra chi sta giocando in questo periodo: <b>coppie mescolate e sfide mai giocate</b>. L'ELO diventa più preciso quando tutti giocano con e contro tutti; le coppie fisse rendono i rating confrontabili solo tra loro. Chi non gioca da più di due mesi non viene proposto, e l'algoritmo rispetta i ruoli: <b>mai due attaccanti nella stessa coppia</b>, con preferenza per le coppie attaccante+difensore.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>CHI ENTRA IN CLASSIFICA</h3>
+        <p>Per comparire in classifica servono, nella stagione: <b>10 partite</b>, <b>6 avversari diversi</b> e <b>3 compagni diversi</b>. Chi non ci arriva è tra i "non classificati" con un ELO provvisorio: poche partite, o sempre contro le stesse persone, producono un rating non confrontabile con gli altri.</p>
       </div>
 
       <div class="info-card">
@@ -1841,6 +2005,13 @@ document.addEventListener("click", async (e) => {
     render();
     return;
   }
+  if (t.dataset.present) {
+    const id = t.dataset.present;
+    const idx = state.present.indexOf(id);
+    if (idx >= 0) state.present.splice(idx, 1); else state.present.push(id);
+    render();
+    return;
+  }
   if (t.dataset.score) {
     const key = t.dataset.score === "A" ? "scoreA" : "scoreB";
     state[key] = Math.max(0, state[key] + Number(t.dataset.dir));
@@ -1854,6 +2025,7 @@ document.addEventListener("click", async (e) => {
     state.winnerSide = null;
     state.teamA = [a1, a2];
     state.teamB = [b1, b2];
+    state.suggested = t.dataset.boost === "0" ? null : { a: [a1, a2], b: [b1, b2] };
     state.scoreA = 0;
     state.scoreB = 0;
     render();
