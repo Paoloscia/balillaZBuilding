@@ -460,6 +460,15 @@
   .foot-note { font-size: 12px; opacity: 0.6; text-align: center; margin-top: 20px; }
   .loading { text-align: center; padding: 60px 0; opacity: 0.8; }
 
+  body.tv nav, body.tv #toast { display: none !important; }
+  body.tv .container { max-width: 760px; }
+  body.tv h1 { font-size: 68px; }
+  body.tv .row { padding: 16px 22px; }
+  body.tv .player-name { font-size: 24px; }
+  body.tv .elo { font-size: 36px; }
+  body.tv .rank { font-size: 30px; width: 48px; }
+  body.tv .meta { font-size: 14px; }
+
   @media (max-width: 480px) {
     h1 { font-size: 40px; }
     .teams { flex-direction: column; }
@@ -490,6 +499,10 @@ const SUPABASE_ANON_KEY = "sb_publishable_G7n7aUW5IhECINFT3T2ybw_JrquwZq7";
 // ============================================================
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Modalita' TV: apri la pagina con ?tv=1 per la sola classifica a caratteri
+// grandi, senza menu, con aggiornamento realtime. Perfetta per un monitor.
+const TV = new URLSearchParams(location.search).has("tv");
 
 // ---------- ELO ----------
 const K = 32;
@@ -616,7 +629,9 @@ const state = {
   tName: "",
   tFormat: "elim",
   tRated: true,
+  tSignup: false,
   profileId: null,
+  h2hId: null,
   present: [],
   suggestedList: [], // formazioni consigliate usate, col relativo bonus
   mode: "2v2",
@@ -681,7 +696,7 @@ async function loadAll() {
     sb.from("seasons").select("*").order("created_at", { ascending: false }),
     sb.from("season_results").select("*").order("rank", { ascending: true }),
     sb.from("matches").select("*").eq("status", "confirmed")
-      .order("confirmed_at", { ascending: false }).limit(200),
+      .order("confirmed_at", { ascending: false }).limit(600),
     sb.from("matches").select("*").eq("status", "pending")
       .order("created_at", { ascending: true }),
     sb.from("tournaments").select("*").order("created_at", { ascending: false }),
@@ -913,6 +928,13 @@ async function closeSeason() {
   const season = activeSeason();
   if (!season) return;
 
+  // 0) premi di stagione, da TUTTE le partite della stagione
+  let awards = null;
+  const { data: allSeason } = await sb.from("matches").select("*")
+    .eq("season_id", season.id).eq("status", "confirmed")
+    .order("confirmed_at", { ascending: true });
+  if (allSeason) awards = computeAwards(allSeason);
+
   // 1) snapshot nell'albo d'oro
   const ranked = [...state.players].sort((a, b) => b.elo - a.elo);
   const rows = ranked.map((p, i) => ({
@@ -929,7 +951,7 @@ async function closeSeason() {
 
   // 2) chiudi la corrente
   const r2 = await sb.from("seasons")
-    .update({ active: false, ended_at: new Date().toISOString() })
+    .update({ active: false, ended_at: new Date().toISOString(), awards })
     .eq("id", season.id);
 
   // 3) reset del rank a scaglioni
@@ -967,6 +989,25 @@ async function createTournament() {
   if (!season) { toast("Serve una stagione attiva", false); return; }
   const name = state.tName.trim();
   if (!name) { toast("Dai un nome al torneo", false); return; }
+
+  if (state.tSignup) {
+    if (state.tPairs.length < 2) { toast("Servono almeno 2 coppie", false); return; }
+    const flat = state.tPairs.flat().filter(Boolean);
+    if (new Set(flat).size !== flat.length) { toast("Un giocatore è in più coppie", false); return; }
+    const teams = state.tPairs.map(([p1, p2]) => ({ p1: p1 || null, p2: p2 || null }));
+    const { error } = await sb.from("tournaments").insert({
+      name, season_id: season.id, teams, bracket: [],
+      format: state.tFormat, rated: state.tRated, status: "signup",
+    });
+    if (error) { toast("Errore nella creazione del torneo", false); return; }
+    state.tName = "";
+    state.tPairs = [["", ""], ["", ""]];
+    state.tRated = true;
+    state.tSignup = false;
+    toast(`Torneo "${name}" aperto alle iscrizioni`);
+    return;
+  }
+
   const pairs = state.tPairs.filter((p) => p[0] && p[1]);
   const flat = pairs.flat();
   if (pairs.length < 2 || pairs.length !== state.tPairs.length) {
@@ -998,6 +1039,40 @@ async function createTournament() {
   state.tPairs = [["", ""], ["", ""]];
   state.tRated = true;
   toast(`Torneo "${name}" creato`);
+}
+
+async function claimSlot(tid, ti, slot, playerId) {
+  const t = state.tournaments.find((x) => x.id === tid);
+  if (!t || t.status !== "signup") return;
+  const inT = t.teams.flatMap((x) => [x.p1, x.p2]).filter(Boolean);
+  if (inT.includes(playerId)) { toast("Giocatore già iscritto a questo torneo", false); return; }
+  const key = slot === 0 ? "p1" : "p2";
+  if (t.teams[ti][key]) { toast("Posto già occupato, ricarica", false); return; }
+  const teams = t.teams.map((x, i) => (i === ti ? { ...x, [key]: playerId } : x));
+  const { error } = await sb.from("tournaments").update({ teams }).eq("id", tid);
+  if (error) { toast("Errore nell'iscrizione", false); return; }
+  toast(`${nameOf(playerId)} iscritto: posto confermato`);
+}
+
+async function startTournament(t) {
+  if (t.status !== "signup") return;
+  if (t.teams.some((x) => !x.p1 || !x.p2)) { toast("Ci sono ancora posti vuoti", false); return; }
+  const sorted = [...t.teams].sort((a, b) =>
+    pairRating([b.p1, b.p2]) - pairRating([a.p1, a.p2]));
+  let bracket;
+  if ((t.format ?? "elim") === "girone") {
+    const fixtures = [];
+    for (let i = 0; i < sorted.length; i++)
+      for (let j = i + 1; j < sorted.length; j++)
+        fixtures.push({ a: i, b: j, winner: null, score: null });
+    bracket = [fixtures];
+  } else {
+    bracket = buildBracket(sorted.length);
+  }
+  const { error } = await sb.from("tournaments")
+    .update({ teams: sorted, bracket, status: "open" }).eq("id", t.id);
+  if (error) { toast("Errore nell'avvio", false); return; }
+  toast(`Torneo "${t.name}" avviato!`);
 }
 
 async function deleteTournament(id) {
@@ -1250,6 +1325,158 @@ function qualification(p) {
   };
 }
 
+// ---------- Premi di fine stagione ----------
+function computeAwards(all) {
+  const streakCur = {}, streakBest = {}, startElo = {}, games = {};
+  const pairs = {};
+  for (const m of all) {
+    const winners = m.winners ?? [];
+    for (const id of [...m.team_a, ...m.team_b]) {
+      games[id] = (games[id] ?? 0) + 1;
+      if (m.pre && m.pre[id] != null && !(id in startElo)) startElo[id] = m.pre[id];
+      if (winners.includes(id)) {
+        streakCur[id] = (streakCur[id] ?? 0) + 1;
+        streakBest[id] = Math.max(streakBest[id] ?? 0, streakCur[id]);
+      } else streakCur[id] = 0;
+    }
+    for (const team of [m.team_a, m.team_b]) {
+      if (team.length !== 2) continue;
+      const k = pairKey(team[0], team[1]);
+      (pairs[k] ??= { ids: [...team], w: 0, l: 0 });
+      winners.includes(team[0]) ? pairs[k].w++ : pairs[k].l++;
+    }
+  }
+  const top = (obj, val) => {
+    let b = null;
+    for (const id of Object.keys(obj)) {
+      const v = val(id);
+      if (v != null && (!b || v > b.v)) b = { id, v };
+    }
+    return b;
+  };
+  const st = top(streakBest, (id) => (streakBest[id] >= 3 ? streakBest[id] : null));
+  const g = top(games, (id) => games[id]);
+  const cl = top(startElo, (id) => (byId(id) ? byId(id).elo - startElo[id] : null));
+  const bp = Object.values(pairs).filter((p) => p.w + p.l >= 3)
+    .sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l) || b.w - a.w)[0] ?? null;
+  const awards = {};
+  if (st) awards.streak = { name: nameOf(st.id), n: st.v };
+  if (g) awards.games = { name: nameOf(g.id), n: g.v };
+  if (cl && cl.v > 0) awards.climber = { name: nameOf(cl.id), delta: Math.round(cl.v) };
+  if (bp) awards.pair = { names: bp.ids.map(nameOf).join(" + "), w: bp.w, l: bp.l };
+  return awards;
+}
+
+// ---------- Ricalcolo stagione ----------
+// Rigioca tutte le partite confermate della stagione in ordine cronologico
+// e riscrive delta, pre e rating. Il rating di partenza di ciascuno e' il
+// "pre" della sua prima partita di stagione.
+async function recalcSeason() {
+  const season = activeSeason();
+  if (!season) return;
+  const { data: all, error } = await sb.from("matches").select("*")
+    .eq("season_id", season.id).eq("status", "confirmed")
+    .order("confirmed_at", { ascending: true });
+  if (error || !all) { toast("Errore nel caricamento delle partite", false); return; }
+
+  const elo = {}, wins = {}, losses = {};
+  for (const m of all)
+    for (const id of Object.keys(m.pre ?? {}))
+      if (!(id in elo)) elo[id] = m.pre[id];
+  for (const p of state.players) if (!(p.id in elo)) elo[p.id] = p.elo;
+
+  const dayCount = {};
+  const mk = (a, b) => {
+    const ta = [...a].sort().join(","), tb = [...b].sort().join(",");
+    return ta < tb ? ta + "|" + tb : tb + "|" + ta;
+  };
+  const updates = [];
+  for (const m of all) {
+    const ids = [...m.team_a, ...m.team_b];
+    if (ids.some((id) => !(id in elo))) continue;
+    const tr = (t) => {
+      if (t.length === 1) return elo[t[0]];
+      const [r1, r2] = t.map((id) => elo[id]);
+      return (r1 + r2) / 2 - HANDICAP * Math.abs(r1 - r2);
+    };
+    const ratingA = tr(m.team_a), ratingB = tr(m.team_b);
+    const noScore = m.score_a == null || m.score_b == null;
+    const aWins = noScore ? m.winner_side === "A" : m.score_a > m.score_b;
+    const wElo = aWins ? ratingA : ratingB, lElo = aWins ? ratingB : ratingA;
+    const mv = noScore
+      ? NO_SCORE_BASE * (2.2 / ((wElo - lElo) * 0.001 + 2.2))
+      : movMultiplier(Math.abs(m.score_a - m.score_b), wElo, lElo);
+    const dayKey = mk(m.team_a, m.team_b) + "@" + new Date(m.created_at).toDateString();
+    const prior = dayCount[dayKey] ?? 0;
+    dayCount[dayKey] = prior + 1;
+    const repF = prior >= 2 ? 0.5 : 1;
+    const boost = m.boost ?? (m.boosted ? 1.25 : 1);
+    const expA = expectedScore(ratingA, ratingB);
+    const totalA = K * mv * ((aWins ? 1 : 0) - expA) * m.team_a.length * repF * boost;
+    const deltas = {}, pre = {};
+    for (const id of ids) pre[id] = elo[id];
+    const assign = (team, total, winning) => {
+      if (team.length === 1) { deltas[team[0]] = Math.round(total); return; }
+      const [i, j] = team;
+      const share = winning ? elo[j] / (elo[i] + elo[j]) : elo[i] / (elo[i] + elo[j]);
+      deltas[i] = Math.round(total * share);
+      deltas[j] = Math.round(total * (1 - share));
+    };
+    assign(m.team_a, totalA, aWins);
+    assign(m.team_b, -totalA, !aWins);
+    const winners = aWins ? m.team_a : m.team_b;
+    for (const id of ids) {
+      elo[id] += deltas[id];
+      if (winners.includes(id)) wins[id] = (wins[id] ?? 0) + 1;
+      else losses[id] = (losses[id] ?? 0) + 1;
+    }
+    updates.push({ id: m.id, deltas, pre, winners });
+  }
+
+  for (let i = 0; i < updates.length; i += 20) {
+    const res = await Promise.all(updates.slice(i, i + 20).map((u) =>
+      sb.from("matches").update({ deltas: u.deltas, pre: u.pre, winners: u.winners }).eq("id", u.id)));
+    if (res.some((r) => r.error)) { toast("Errore nel ricalcolo (partite)", false); return; }
+  }
+  const pres = await Promise.all(state.players.map((p) =>
+    sb.from("players").update({
+      elo: Math.round(elo[p.id] ?? p.elo),
+      wins: wins[p.id] ?? 0,
+      losses: losses[p.id] ?? 0,
+    }).eq("id", p.id)));
+  if (pres.some((r) => r.error)) { toast("Errore nel ricalcolo (giocatori)", false); return; }
+  toast(`Stagione ricalcolata: ${updates.length} partite rigiocate`);
+}
+
+// ---------- Backup ----------
+async function fetchAll(table) {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from(table).select("*").range(from, from + 999);
+    if (error) throw error;
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
+  return out;
+}
+
+async function downloadBackup() {
+  try {
+    const tables = ["players", "seasons", "season_results", "matches", "tournaments", "player_requests"];
+    const dump = { exported_at: new Date().toISOString() };
+    for (const tb of tables) dump[tb] = await fetchAll(tb);
+    const blob = new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `calcetto-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("Backup scaricato");
+  } catch {
+    toast("Errore nel backup", false);
+  }
+}
+
 // ---------- UI ----------
 let toastTimer;
 function toast(text, ok = true) {
@@ -1371,7 +1598,7 @@ function profileData(pid) {
   const nem = pick(vs, (r) => r.l * 2 - r.w, 2);
   const vit = pick(vs, (r) => r.w * 2 - r.l, 2);
   return {
-    ms, curve,
+    ms, curve, vs, mate,
     nemesi: nem && nem.r.l >= 2 ? nem : null,
     vittima: vit && vit.r.w >= 2 ? vit : null,
     oro: pick(mate, (r) => r.w / (r.w + r.l), 2),
@@ -1451,6 +1678,17 @@ function renderProfile(pid) {
   if (d.bestStreak >= 2) stats += line("Miglior striscia", `<b>${d.bestStreak} vittorie</b> di fila`);
   if (!stats) stats = `<p class="meta">Servono un po' di partite per le statistiche.</p>`;
 
+  let h2hHTML = "";
+  if (state.h2hId && byId(state.h2hId)) {
+    const v = d.vs[state.h2hId], mte = d.mate[state.h2hId];
+    const parts = [];
+    if (v) parts.push(`Contro: <b>${v.w}V–${v.l}S</b>`);
+    if (mte) parts.push(`Insieme: <b>${mte.w}V–${mte.l}S</b>`);
+    h2hHTML = parts.length
+      ? `<p style="margin-top:10px">${parts.join(" · ")}</p>`
+      : `<p class="meta" style="margin-top:10px">Mai incrociati nelle partite recenti.</p>`;
+  }
+
   return `
     <button class="undo" id="profile-back">← Torna alla classifica</button>
     <div class="info-card">
@@ -1461,6 +1699,14 @@ function renderProfile(pid) {
     ${d.curve.length >= 2 ? `<div class="info-card"><h3>ANDAMENTO ELO</h3>${sparklineSVG(d.curve)}</div>` : ""}
     <div class="info-card"><h3>BACHECA</h3>${chips}</div>
     <div class="info-card"><h3>STATISTICHE</h3>${stats}</div>
+    <div class="info-card"><h3>TESTA A TESTA</h3>
+      <select data-h2h="1" style="width:100%;padding:9px 8px;border:none;border-radius:7px;background:var(--cream);color:#1c1c1c;font-size:14px">
+        <option value="">— scegli un giocatore —</option>
+        ${[...state.players].sort(byName).filter((x) => x.id !== pid).map((x) =>
+          `<option value="${x.id}" ${state.h2hId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
+      </select>
+      ${h2hHTML}
+    </div>
     <div class="section-label" style="margin-top:22px">LE SUE PARTITE</div>
     ${[...d.ms].reverse().slice(0, 20).map((m) =>
       matchRowHTML(m, { showSeason: state.seasons.length > 1 })).join("")
@@ -1469,6 +1715,7 @@ function renderProfile(pid) {
 }
 
 function render() {
+  if (TV) state.tab = "classifica";
   renderNav();
   const app = document.getElementById("app");
   const { players, matches, pending, tab } = state;
@@ -1517,6 +1764,34 @@ function render() {
       out += `<div class="section-label" style="margin-top:18px">NON CLASSIFICATI</div>
         <div class="meta" style="margin-bottom:8px">ELO provvisorio: per la classifica servono ${QUAL.games} partite, ${QUAL.opps} avversari e ${QUAL.mates} compagni diversi nella stagione.</div>`;
       out += unranked.map((p) => rowHTML(p, -1, quals.get(p.id))).join("");
+    }
+
+    // migliori coppie della stagione (minimo 3 partite insieme)
+    const pairStats = {};
+    for (const m of matches) {
+      if (season && m.season_id !== season.id) continue;
+      for (const team of [m.team_a, m.team_b]) {
+        if (team.length !== 2) continue;
+        const k = pairKey(team[0], team[1]);
+        (pairStats[k] ??= { ids: [...team], w: 0, l: 0 });
+        m.winners.includes(team[0]) ? pairStats[k].w++ : pairStats[k].l++;
+      }
+    }
+    const topPairs = Object.values(pairStats).filter((p) => p.w + p.l >= 3)
+      .sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l) || b.w - a.w)
+      .slice(0, 5);
+    if (topPairs.length) {
+      out += `<div class="section-label" style="margin-top:18px">MIGLIORI COPPIE</div>`;
+      out += topPairs.map((p, i) => {
+        const pct = Math.round((p.w / (p.w + p.l)) * 100);
+        return `<div class="row">
+          <div class="rank" style="font-size:16px">${i + 1}</div>
+          <div style="flex:1">
+            <div class="player-name" style="font-size:14px">${p.ids.map((id) => esc(nameOf(id))).join(" + ")}</div>
+            <div class="meta">${p.w}V–${p.l}S · ${pct}%</div>
+          </div>
+        </div>`;
+      }).join("");
     }
     app.innerHTML = out;
     return;
@@ -1769,6 +2044,11 @@ function render() {
               <button data-trated="1" class="${state.tRated ? "active" : ""}" style="font-size:12px">Vale per l'ELO</button>
               <button data-trated="0" class="${!state.tRated ? "active" : ""}" style="font-size:12px">Solo per la gloria</button>
             </div>
+            <div class="mode-row" style="margin-bottom:0">
+              <button data-tsignup="0" class="${!state.tSignup ? "active" : ""}" style="font-size:12px">Coppie complete</button>
+              <button data-tsignup="1" class="${state.tSignup ? "active" : ""}" style="font-size:12px">Iscrizioni aperte</button>
+            </div>
+            ${state.tSignup ? `<div class="meta">Puoi lasciare posti vuoti: li occuperà chi vuole partecipare, poi avvierai tu il torneo.</div>` : ""}
             <input id="t-name" placeholder="Nome torneo" maxlength="40" value="${esc(state.tName)}">
             ${pairRows}
             <button class="undo" id="t-addpair" style="margin-bottom:0">+ Aggiungi coppia</button>
@@ -1783,8 +2063,44 @@ function render() {
       return;
     }
 
+
+    const signupT = state.tournaments.filter((t) => t.status === "signup");
     const openT = state.tournaments.filter((t) => t.status === "open");
     const doneT = state.tournaments.filter((t) => t.status === "done");
+
+    if (signupT.length) html += `<div class="section-label">ISCRIZIONI APERTE</div>`;
+    for (const t of signupT) {
+      const inT = t.teams.flatMap((x) => [x.p1, x.p2]).filter(Boolean);
+      const filled = inT.length, total = t.teams.length * 2;
+      const opts = [...players].sort(byName)
+        .filter((p) => !inT.includes(p.id))
+        .map((p) => `<option value="${p.id}">${esc(p.name)} (${p.elo})</option>`).join("");
+      const teamRows = t.teams.map((team, ti) => {
+        const slotHTML = (key, slot) => team[key]
+          ? `<div class="b-team">${esc(nameOf(team[key]))}<span class="b-score" style="font-size:12px;opacity:0.6">✓ confermato</span></div>`
+          : `<div class="b-record" style="margin-top:2px">
+              <select id="su-${t.id}-${ti}-${slot}" style="flex:1;padding:7px 8px;border:none;border-radius:7px;background:var(--cream);color:#1c1c1c;font-size:13px;min-width:0">
+                <option value="">— posto libero —</option>${opts}
+              </select>
+              <button data-claim="${t.id}|${ti}|${slot}">Conferma</button>
+            </div>`;
+        return `<div class="b-match">
+          <div class="meta" style="margin-bottom:2px">COPPIA ${ti + 1}</div>
+          ${slotHTML("p1", 0)}${slotHTML("p2", 1)}
+        </div>`;
+      }).join("");
+      const startBtn = isAdmin()
+        ? `<button class="cta" data-starttournament="${t.id}" style="font-size:14px;padding:11px 0;margin-top:8px" ${filled === total ? "" : "disabled"}>
+            ${filled === total ? "Avvia torneo" : `Avvia torneo (${filled}/${total} posti)`}
+          </button>` : "";
+      html += `<div class="info-card">
+        <h3>${esc(t.name).toUpperCase()}${isAdmin() ? `<button class="del-btn" data-deltournament="${t.id}" title="Elimina" style="float:right">✕</button>` : ""}</h3>
+        <p class="meta" style="margin-bottom:6px">${esc(seasonName(t.season_id))} · ${t.teams.length} coppie · ${filled}/${total} posti · ${(t.format ?? "elim") === "girone" ? "girone" : "eliminazione"}${t.rated === false ? " · non vale per l'ELO" : ""}</p>
+        <p class="meta" style="margin-bottom:8px">Scegli un posto libero e conferma: l'iscrizione non si può più cambiare.</p>
+        ${teamRows}
+        ${startBtn}
+      </div>`;
+    }
 
     if (openT.length) html += `<div class="section-label">IN CORSO</div>`;
     for (const t of openT) {
@@ -1893,7 +2209,8 @@ function render() {
             style="padding:9px 12px;border:none;border-radius:8px;font-size:14px;background:var(--cream);color:#1c1c1c;margin-bottom:6px">` : ""}
           ${leader ? `<p>In testa: <b>${esc(leader.name)}</b> (${leader.elo})</p>` : "<p>Nessun giocatore.</p>"}
           ${isAdmin() ? `<button class="close-btn" id="close-season">Chiudi stagione</button>
-          <button class="close-btn" data-renameseason="${season.id}" style="margin-left:6px">✏️ Rinomina</button>` : ""}
+          <button class="close-btn" data-renameseason="${season.id}" style="margin-left:6px">✏️ Rinomina</button>
+          <button class="close-btn" id="recalc-season" style="margin-left:6px">↻ Ricalcola ELO</button>` : ""}
         </div>`;
     } else {
       html += `<div class="empty">Nessuna stagione in corso.</div>`;
@@ -1932,12 +2249,20 @@ function render() {
           </div>`
         ).join("");
         const others = res.length > 3 ? `<div class="meta" style="margin-top:6px">e altri ${res.length - 3} giocatori</div>` : "";
+        const aw = s.awards ?? {};
+        const awLines = [
+          aw.streak ? `🔥 Striscia migliore: <b>${esc(aw.streak.name)}</b> (${aw.streak.n}V)` : "",
+          aw.games ? `🎮 Più partite: <b>${esc(aw.games.name)}</b> (${aw.games.n})` : "",
+          aw.climber ? `📈 Scalata della stagione: <b>${esc(aw.climber.name)}</b> (+${aw.climber.delta})` : "",
+          aw.pair ? `🤝 Coppia d'oro: <b>${esc(aw.pair.names)}</b> (${aw.pair.w}V–${aw.pair.l}S)` : "",
+        ].filter(Boolean).map((l) => `<p class="meta" style="margin-top:4px">${l}</p>`).join("");
         const dates = `${fmtDate(s.created_at, false)} → ${s.ended_at ? fmtDate(s.ended_at, false) : "?"}`;
         return `<div class="info-card">
           <h3>${esc(s.name).toUpperCase()} ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina" style="float:right">✏️</button>` : ""}</h3>
           <p class="meta" style="margin-bottom:10px">${dates}</p>
           ${podium || `<p class="meta">Nessun risultato archiviato.</p>`}
           ${others}
+          ${awLines ? `<div style="margin-top:8px">${awLines}</div>` : ""}
         </div>`;
       }).join("");
     }
@@ -2070,6 +2395,7 @@ function render() {
     const authBox = isAdmin()
       ? `<div class="auth-box">
           <div class="meta" style="margin-bottom:8px">Admin: ${esc(state.session.user.email)}</div>
+          <button class="undo" id="backup">Scarica backup dati (JSON)</button>
           <button class="undo" id="logout" style="margin-bottom:0">Esci</button>
         </div>`
       : `<div class="auth-box">
@@ -2115,6 +2441,7 @@ async function withBusy(fn) {
 }
 
 document.addEventListener("click", async (e) => {
+  if (TV) return;
   const t = e.target;
 
   if (t.dataset.tab) {
@@ -2132,6 +2459,7 @@ document.addEventListener("click", async (e) => {
   const profEl = e.target.closest?.("[data-profile]");
   if (profEl && !e.target.closest("button")) {
     state.profileId = profEl.dataset.profile;
+    state.h2hId = null;
     render();
     return;
   }
@@ -2142,6 +2470,11 @@ document.addEventListener("click", async (e) => {
   }
   if (t.dataset.trated) {
     state.tRated = t.dataset.trated === "1";
+    render();
+    return;
+  }
+  if (t.dataset.tsignup) {
+    state.tSignup = t.dataset.tsignup === "1";
     render();
     return;
   }
@@ -2218,6 +2551,14 @@ document.addEventListener("click", async (e) => {
     const endsAt = endRaw ? new Date(endRaw + "T23:59:59").toISOString() : null;
     return withBusy(() => createSeason(name, endsAt));
   }
+  if (t.id === "recalc-season") {
+    if (!confirm("Ricalcolare tutta la stagione?\nTutte le partite confermate vengono rigiocate in ordine cronologico e i rating riscritti. Può richiedere qualche secondo.")) return;
+    return withBusy(recalcSeason);
+  }
+  if (t.id === "backup") {
+    downloadBackup();
+    return;
+  }
   if (t.id === "close-season") {
     const s = activeSeason();
     if (!s) return;
@@ -2255,6 +2596,20 @@ document.addEventListener("click", async (e) => {
   }
   if (t.id === "create-tournament") {
     return withBusy(createTournament);
+  }
+  if (t.dataset.claim) {
+    const [tid, ti, slot] = t.dataset.claim.split("|");
+    const sel = document.getElementById(`su-${tid}-${ti}-${slot}`);
+    const pid = sel?.value;
+    if (!pid) { toast("Scegli un giocatore per il posto", false); return; }
+    if (!confirm(`Confermare ${nameOf(pid)} in questo posto? Non si potrà più cambiare.`)) return;
+    return withBusy(() => claimSlot(tid, Number(ti), Number(slot), pid));
+  }
+  if (t.dataset.starttournament) {
+    const tor = state.tournaments.find((x) => x.id === t.dataset.starttournament);
+    if (!tor) return;
+    if (!confirm(`Avviare "${tor.name}"? Le coppie diventano teste di serie e le iscrizioni si chiudono.`)) return;
+    return withBusy(() => startTournament(tor));
   }
   if (t.dataset.deltournament) {
     const tor = state.tournaments.find((x) => x.id === t.dataset.deltournament);
@@ -2330,6 +2685,11 @@ document.addEventListener("change", (e) => {
     withBusy(() => setRole(t.dataset.roleplayer, t.value));
     return;
   }
+  if (t.dataset.h2h) {
+    state.h2hId = t.value || null;
+    render();
+    return;
+  }
   if (t.dataset.seasonend) {
     const iso = t.value ? new Date(t.value + "T23:59:59").toISOString() : null;
     withBusy(async () => {
@@ -2360,6 +2720,7 @@ sb.auth.onAuthStateChange((_event, session) => {
   render();
 });
 
+if (TV) document.body.classList.add("tv");
 await loadAll();
 render();
 subscribeRealtime();
