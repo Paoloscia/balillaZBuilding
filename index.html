@@ -495,7 +495,8 @@ const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const K = 32;
 const HANDICAP = 0.25;     // quanto pesa lo sbilanciamento interno della coppia
 const NO_SCORE_BASE = 0.5; // valore di una partita senza punteggio (10-9 ≈ 0.7)
-const SUGGESTED_BOOST = 1.25; // le partite consigliate dall'app pesano di piu'
+const SUGGESTED_BOOST = 1.4;  // le partite consigliate del giorno
+const LINEUP_BOOST = 1.25;    // i tavoli di "Chi c'e' oggi", se portano incroci nuovi
 
 const expectedScore = (ra, rb) => 1 / (1 + Math.pow(10, (rb - ra) / 400));
 
@@ -520,7 +521,7 @@ function teamRating(ids) {
   return (r1 + r2) / 2 - HANDICAP * Math.abs(r1 - r2);
 }
 
-function computeMatch(idsA, idsB, scoreA, scoreB, winnerSide, refDate = null, boosted = false) {
+function computeMatch(idsA, idsB, scoreA, scoreB, winnerSide, refDate = null, boost = 1) {
   const size = idsA.length;
   const ratingA = teamRating(idsA);
   const ratingB = teamRating(idsB);
@@ -536,7 +537,7 @@ function computeMatch(idsA, idsB, scoreA, scoreB, winnerSide, refDate = null, bo
   const expA = expectedScore(ratingA, ratingB);
   const totalA = K * mov * ((aWins ? 1 : 0) - expA) * size
     * repetitionFactor(idsA, idsB, refDate ?? Date.now())
-    * (boosted ? SUGGESTED_BOOST : 1);
+    * boost;
 
   const deltas = {};
   const assign = (ids, total, winning) => {
@@ -615,7 +616,7 @@ const state = {
   tFormat: "elim",
   profileId: null,
   present: [],
-  suggested: null, // ultima formazione consigliata usata
+  suggestedList: [], // formazioni consigliate usate, col relativo bonus
   mode: "1v1",
   noScore: false,
   winnerSide: null,
@@ -731,8 +732,8 @@ async function applyDeltas(deltas, winners, sign = 1) {
 }
 
 // crea una partita confermata (usata dal form e dai tornei)
-async function insertConfirmedMatch(idsA, idsB, scoreA, scoreB, winnerSide, seasonId, boosted = false) {
-  const { deltas, winners, pre } = computeMatch(idsA, idsB, scoreA, scoreB, winnerSide, null, boosted);
+async function insertConfirmedMatch(idsA, idsB, scoreA, scoreB, winnerSide, seasonId, boost = 1) {
+  const { deltas, winners, pre } = computeMatch(idsA, idsB, scoreA, scoreB, winnerSide, null, boost);
   const ok = await applyDeltas(deltas, winners);
   const ins = await sb.from("matches").insert({
     mode: idsA.length === 1 ? "1v1" : "2v2",
@@ -740,20 +741,29 @@ async function insertConfirmedMatch(idsA, idsB, scoreA, scoreB, winnerSide, seas
     score_a: scoreA, score_b: scoreB,
     winner_side: winnerSide,
     season_id: seasonId,
-    deltas, pre, winners, boosted,
+    deltas, pre, winners, boost,
     status: "confirmed",
     confirmed_at: new Date().toISOString(),
   });
   return ok && !ins.error;
 }
 
-function matchesSuggestion() {
-  const s = state.suggested;
-  if (!s || state.mode !== "2v2") return false;
+const teamSetEq = (x, y) => [...x].sort().join() === [...y].sort().join();
+
+function suggestionBoostFor(a, b) {
+  for (let i = 0; i < state.suggestedList.length; i++) {
+    const s = state.suggestedList[i];
+    if ((teamSetEq(a, s.a) && teamSetEq(b, s.b)) || (teamSetEq(a, s.b) && teamSetEq(b, s.a)))
+      return { boost: s.boost, index: i };
+  }
+  return null;
+}
+
+function currentSuggestion() {
+  if (state.mode !== "2v2") return null;
   const a = state.teamA.slice(0, 2), b = state.teamB.slice(0, 2);
-  if (a.some((x) => !x) || b.some((x) => !x)) return false;
-  const setEq = (x, y) => [...x].sort().join() === [...y].sort().join();
-  return (setEq(a, s.a) && setEq(b, s.b)) || (setEq(a, s.b) && setEq(b, s.a));
+  if (a.some((x) => !x) || b.some((x) => !x)) return null;
+  return suggestionBoostFor(a, b);
 }
 
 async function recordMatch() {
@@ -766,10 +776,11 @@ async function recordMatch() {
   const sa = noScore ? null : state.scoreA;
   const sbv = noScore ? null : state.scoreB;
   const ws = noScore ? state.winnerSide : null;
-  const boosted = matchesSuggestion();
+  const sugg = currentSuggestion();
+  const boost = sugg?.boost ?? 1;
 
   if (isAdmin()) {
-    const ok = await insertConfirmedMatch(idsA, idsB, sa, sbv, ws, season.id, boosted);
+    const ok = await insertConfirmedMatch(idsA, idsB, sa, sbv, ws, season.id, boost);
     if (!ok) { toast("Errore di salvataggio, ricarica la pagina", false); return; }
     toast("Partita registrata");
     state.tab = "classifica";
@@ -780,7 +791,7 @@ async function recordMatch() {
       score_a: sa, score_b: sbv,
       winner_side: ws,
       season_id: season.id,
-      boosted,
+      boost,
       status: "pending",
     });
     if (ins.error) { toast("Errore di invio, riprova", false); return; }
@@ -793,7 +804,7 @@ async function recordMatch() {
   state.scoreA = 0;
   state.scoreB = 0;
   state.winnerSide = null;
-  state.suggested = null;
+  if (sugg) state.suggestedList.splice(sugg.index, 1);
 }
 
 async function confirmMatch(id) {
@@ -809,7 +820,7 @@ async function confirmMatch(id) {
     return;
   }
   const { deltas, winners, pre } = computeMatch(
-    m.team_a, m.team_b, m.score_a, m.score_b, m.winner_side, m.created_at, m.boosted ?? false
+    m.team_a, m.team_b, m.score_a, m.score_b, m.winner_side, m.created_at, m.boost ?? (m.boosted ? 1.25 : 1)
   );
   const ok = await applyDeltas(deltas, winners);
   const upd = await sb.from("matches").update({
@@ -1213,6 +1224,7 @@ function streakOf(form) {
 
 function matchRowHTML(m, { pending = false, actions = false, showSeason = false } = {}) {
   const noScore = m.score_a == null || m.score_b == null;
+  const bVal = m.boost ?? (m.boosted ? 1.25 : 1);
   const aWon = noScore ? m.winner_side === "A" : m.score_a > m.score_b;
   const deltaStr = !pending && m.deltas
     ? [...m.team_a, ...m.team_b]
@@ -1232,12 +1244,12 @@ function matchRowHTML(m, { pending = false, actions = false, showSeason = false 
        <span style="opacity:0.5"> – </span>
        <span class="${!aWon ? "win" : ""}">${m.score_b}</span>`;
   const seasonTag = showSeason ? ` · ${esc(seasonName(m.season_id))}` : "";
-  return `<div class="match-row ${pending ? "pending" : ""}${m.boosted ? " boosted" : ""}">
+  return `<div class="match-row ${pending ? "pending" : ""}${bVal > 1 ? " boosted" : ""}">
     <div style="flex:1">
       <span class="team-a">${m.team_a.map((id) => esc(nameOf(id))).join(" + ")}</span>
       <span style="opacity:0.7"> vs </span>
       <span class="team-b">${m.team_b.map((id) => esc(nameOf(id))).join(" + ")}</span>
-      <div class="meta">${fmtDate(m.created_at)} · ${m.mode}${noScore ? " · senza punteggio" : ""}${m.boosted ? ` · <span style="color:var(--gold);font-weight:700">⭐ ×${SUGGESTED_BOOST}</span>` : ""}${seasonTag}</div>
+      <div class="meta">${fmtDate(m.created_at)} · ${m.mode}${noScore ? " · senza punteggio" : ""}${bVal > 1 ? ` · <span style="color:var(--gold);font-weight:700">⭐ ×${bVal}</span>` : ""}${seasonTag}</div>
       <div class="meta">${deltaStr}</div>
       ${btns}
     </div>
@@ -1473,7 +1485,9 @@ function render() {
       </div>`;
     };
 
-    const isSugg = matchesSuggestion();
+    const suggNow = currentSuggestion();
+    const isSugg = !!suggNow;
+    const boostVal = suggNow?.boost ?? 1;
     let forecast = "";
     if (playersOk) {
       const fIdsA = state.teamA.slice(0, size);
@@ -1487,7 +1501,7 @@ function render() {
           state.noScore ? null : state.scoreA,
           state.noScore ? null : state.scoreB,
           state.noScore ? state.winnerSide : null,
-          null, isSugg
+          null, boostVal
         );
         deltaLine = `<div class="meta" style="margin-top:4px">Se va così: ` +
           [...fIdsA, ...fIdsB].map((id) =>
@@ -1498,7 +1512,7 @@ function render() {
         <span style="color:var(--red-light);font-weight:700">Rossi ${pA}%</span>
         <span style="opacity:0.5"> · </span>
         <span style="color:var(--blue-light);font-weight:700">Blu ${100 - pA}%</span>
-        ${isSugg ? `<div style="margin-top:6px"><span class="boost-badge">⭐ CONSIGLIATA · DELTA ×${SUGGESTED_BOOST}</span></div>` : ""}
+        ${isSugg ? `<div style="margin-top:6px"><span class="boost-badge">⭐ CONSIGLIATA · DELTA ×${boostVal}</span></div>` : ""}
         ${deltaLine}
       </div>`;
     }
@@ -1520,26 +1534,44 @@ function render() {
     ).join("");
     let lineupHTML = "";
     if (state.present.length >= 4) {
-      const best = bestLineup(state.present);
-      if (best) {
+      const tableCard = (best, label, boost) => {
+        if (!best) return "";
         const pA = Math.round(expectedScore(
           teamRating(best.A.map((p) => p.id)),
           teamRating(best.B.map((p) => p.id))
         ) * 100);
-        lineupHTML = `<div class="row" style="border:1px solid var(--gold)">
+        const hasBonus = boost > 1;
+        const noBonusNote = !hasBonus && state.present.length >= 8
+          ? " · nessun incrocio nuovo: niente bonus" : "";
+        const thresholdNote = state.present.length < 8 ? " · bonus da 8 presenti" : "";
+        return `<div class="row" style="border:1px solid var(--gold)">
           <div style="flex:1">
+            ${label ? `<div class="meta" style="margin-bottom:2px;letter-spacing:0.1em">${label}</div>` : ""}
             <div class="player-name" style="font-size:14px">${esc(best.A[0].name)} + ${esc(best.A[1].name)} <span style="opacity:0.6">vs</span> ${esc(best.B[0].name)} + ${esc(best.B[1].name)}</div>
-            <div class="meta">${pA}% – ${100 - pA}%${state.present.length >= 8 ? "" : " · bonus ×" + SUGGESTED_BOOST + " da 8 presenti"}${best.ignoredRoles ? " · nessuna combinazione rispetta i ruoli" : ""}</div>
-            ${state.present.length >= 8 ? `<div style="margin-top:4px"><span class="boost-badge">⭐ VALE ×${SUGGESTED_BOOST}</span></div>` : ""}
+            <div class="meta">${pA}% – ${100 - pA}%${best.ignoredRoles ? " · nessuna combinazione rispetta i ruoli" : ""}${noBonusNote}${thresholdNote}</div>
+            ${hasBonus ? `<div style="margin-top:4px"><span class="boost-badge">⭐ VALE ×${boost}</span></div>` : ""}
           </div>
-          <button class="use-btn" data-suggest="${best.A[0].id}|${best.A[1].id}|${best.B[0].id}|${best.B[1].id}" data-boost="${state.present.length >= 8 ? 1 : 0}">Usa</button>
+          <button class="use-btn" data-suggest="${best.A[0].id}|${best.A[1].id}|${best.B[0].id}|${best.B[1].id}" data-boostval="${boost}">Usa</button>
         </div>`;
+      };
+      const bonusOf = (best) =>
+        state.present.length >= 8 && best && (best.newFaced > 0 || best.newTeams > 0)
+          ? LINEUP_BOOST : 1;
+
+      const t1 = bestLineup(state.present);
+      if (state.present.length >= 8 && t1) {
+        const used = new Set([...t1.A, ...t1.B].map((p) => p.id));
+        const rest = state.present.filter((id) => !used.has(id));
+        const t2 = bestLineup(rest);
+        lineupHTML = tableCard(t1, "TAVOLO 1", bonusOf(t1)) + tableCard(t2, "TAVOLO 2", bonusOf(t2));
+      } else if (t1) {
+        lineupHTML = tableCard(t1, "", 1);
       }
     } else if (state.present.length > 0) {
       lineupHTML = `<div class="meta" style="margin-bottom:8px">Seleziona almeno 4 presenti.</div>`;
     }
     const whoHTML = `<div class="section-label" style="margin-top:26px">CHI C'È OGGI</div>
-      <div class="meta" style="margin-bottom:8px">Seleziona i presenti: l'app propone le due coppie migliori per equilibrio e mescolamento.</div>
+      <div class="meta" style="margin-bottom:8px">Seleziona i presenti: l'app propone i tavoli migliori per equilibrio e mescolamento. Da 8 presenti, due tavoli con persone distinte.</div>
       <div style="margin-bottom:8px">${chips}</div>
       ${lineupHTML}`;
 
@@ -1557,7 +1589,7 @@ function render() {
               <div class="meta">${bits.join(" · ")}</div>
               <div style="margin-top:4px"><span class="boost-badge">⭐ VALE ×${SUGGESTED_BOOST}</span></div>
             </div>
-            <button class="use-btn" data-suggest="${A[0].id}|${A[1].id}|${B[0].id}|${B[1].id}">Usa</button>
+            <button class="use-btn" data-suggest="${A[0].id}|${A[1].id}|${B[0].id}|${B[1].id}" data-boostval="${SUGGESTED_BOOST}">Usa</button>
           </div>`;
         }).join("")
       : "";
@@ -1579,7 +1611,7 @@ function render() {
       ${forecast}
       <div class="hint">${hint}</div>
       <button class="cta${isSugg ? " cta-boost" : ""}" id="save-match" ${valid && !state.busy ? "" : "disabled"}>
-        ${isAdmin() ? "Registra partita" : "Invia partita"}${isSugg ? " · ⭐ ×" + SUGGESTED_BOOST : ""}
+        ${isAdmin() ? "Registra partita" : "Invia partita"}${isSugg ? " · ⭐ ×" + boostVal : ""}
       </button>
       ${whoHTML}
       ${suggHTML}`;
@@ -1835,7 +1867,7 @@ function render() {
         <p>Un 10-9 vale circa <b>0.7×</b> il valore base, un 10-0 circa <b>2.4×</b>. La seconda parte della formula smorza i cappotti del favorito e amplifica quelli dello sfavorito, così i più forti non gonfiano il rating massacrando gli ultimi.</p>
         <p>Se il punteggio non ve lo ricordate, si può registrare solo chi ha vinto: la partita vale <b>0.5×</b>, meno di una vittoria di misura, perché senza il punteggio il sistema ha meno informazione ed è prudente.</p>
         <p>Le maratone contano meno: <b>dalla terza partita dello stesso giorno tra le stesse squadre il delta si dimezza</b>. Le prime due valgono piene, poi rigiocare all'infinito lo stesso incrocio smette di spostare punti.</p>
-        <p>Al contrario, le <b>partite consigliate</b> dall'app valgono <b>×1.25</b>: sono gli incroci che danno più informazione al sistema. Il bonus vale solo se giocate la formazione esatta suggerita. Per "Chi c'è oggi" serve che i presenti selezionati siano <b>almeno 8</b>: con pochi presenti non c'è nessuna scelta da premiare.</p>
+        <p>Al contrario, le <b>partite consigliate del giorno</b> valgono <b>×1.4</b>: sono gli incroci che danno più informazione al sistema. Con <b>8+ presenti</b>, "Chi c'è oggi" propone <b>due tavoli</b> con persone distinte: ogni tavolo vale <b>×1.25</b>, ma solo se porta incroci o coppie mai viste, altrimenti niente bonus. In ogni caso il bonus vale solo giocando la formazione esatta suggerita.</p>
         <p><b>3. Il tuo compagno</b> (solo 2v2, vedi sotto).</p>
       </div>
 
@@ -2025,7 +2057,13 @@ document.addEventListener("click", async (e) => {
     state.winnerSide = null;
     state.teamA = [a1, a2];
     state.teamB = [b1, b2];
-    state.suggested = t.dataset.boost === "0" ? null : { a: [a1, a2], b: [b1, b2] };
+    const bv = parseFloat(t.dataset.boostval ?? "1");
+    if (bv > 1) {
+      state.suggestedList = state.suggestedList.filter((s) =>
+        !((teamSetEq(s.a, [a1, a2]) && teamSetEq(s.b, [b1, b2])) ||
+          (teamSetEq(s.a, [b1, b2]) && teamSetEq(s.b, [a1, a2]))));
+      state.suggestedList.push({ a: [a1, a2], b: [b1, b2], boost: bv });
+    }
     state.scoreA = 0;
     state.scoreB = 0;
     render();
