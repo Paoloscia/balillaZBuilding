@@ -614,6 +614,7 @@ const state = {
   tPairs: [["", ""], ["", ""]],
   tName: "",
   tFormat: "elim",
+  tRated: true,
   profileId: null,
   present: [],
   suggestedList: [], // formazioni consigliate usate, col relativo bonus
@@ -951,11 +952,19 @@ async function createTournament() {
 
   const { error } = await sb.from("tournaments").insert({
     name, season_id: season.id, teams, bracket, format: state.tFormat,
+    rated: state.tRated,
   });
   if (error) { toast("Errore nella creazione del torneo", false); return; }
   state.tName = "";
   state.tPairs = [["", ""], ["", ""]];
+  state.tRated = true;
   toast(`Torneo "${name}" creato`);
+}
+
+async function deleteTournament(id) {
+  const { error } = await sb.from("tournaments").delete().eq("id", id);
+  if (error) { toast("Errore nell'eliminazione", false); return; }
+  toast("Torneo eliminato");
 }
 
 async function recordTournamentMatch(tid, r, i, sa, sbv) {
@@ -976,8 +985,10 @@ async function recordTournamentMatch(tid, r, i, sa, sbv) {
     toast("Giocatore non trovato", false); return;
   }
 
-  const ok = await insertConfirmedMatch(idsA, idsB, sa, sbv, null, t.season_id);
-  if (!ok) { toast("Errore nel salvataggio della partita", false); return; }
+  if (t.rated !== false) {
+    const ok = await insertConfirmedMatch(idsA, idsB, sa, sbv, null, t.season_id);
+    if (!ok) { toast("Errore nel salvataggio della partita", false); return; }
+  }
 
   m.winner = sa > sbv ? m.a : m.b;
   m.score = [sa, sbv];
@@ -1689,6 +1700,10 @@ function render() {
               <button data-tformat="elim" class="${state.tFormat === "elim" ? "active" : ""}" style="font-size:12px">Eliminazione</button>
               <button data-tformat="girone" class="${state.tFormat === "girone" ? "active" : ""}" style="font-size:12px">Girone</button>
             </div>
+            <div class="mode-row" style="margin-bottom:0">
+              <button data-trated="1" class="${state.tRated ? "active" : ""}" style="font-size:12px">Vale per l'ELO</button>
+              <button data-trated="0" class="${!state.tRated ? "active" : ""}" style="font-size:12px">Solo per la gloria</button>
+            </div>
             <input id="t-name" placeholder="Nome torneo" maxlength="40" value="${esc(state.tName)}">
             ${pairRows}
             <button class="undo" id="t-addpair" style="margin-bottom:0">+ Aggiungi coppia</button>
@@ -1742,8 +1757,8 @@ function render() {
       });
 
       html += `<div class="info-card">
-        <h3>${esc(t.name).toUpperCase()}</h3>
-        <p class="meta" style="margin-bottom:10px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie · ${fmt === "girone" ? "girone" : "eliminazione"}</p>
+        <h3>${esc(t.name).toUpperCase()}${isAdmin() ? `<button class="del-btn" data-deltournament="${t.id}" title="Elimina" style="float:right">✕</button>` : ""}</h3>
+        <p class="meta" style="margin-bottom:10px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie · ${fmt === "girone" ? "girone" : "eliminazione"}${t.rated === false ? " · non vale per l'ELO" : ""}</p>
         ${bracketHTML}
       </div>`;
     }
@@ -1769,8 +1784,8 @@ function render() {
           detail = `Finale: battuta ${esc(teamLabel(t, loserIdx))}${finalScore ? " " + finalScore : ""}`;
         }
         html += `<div class="info-card">
-          <h3>${esc(t.name).toUpperCase()}</h3>
-          <p class="meta" style="margin-bottom:8px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie</p>
+          <h3>${esc(t.name).toUpperCase()}${isAdmin() ? `<button class="del-btn" data-deltournament="${t.id}" title="Elimina" style="float:right">✕</button>` : ""}</h3>
+          <p class="meta" style="margin-bottom:8px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie${t.rated === false ? " · non valeva per l'ELO" : ""}</p>
           <div class="podium-row">
             <span class="medal">🏆</span>
             <span class="player-name" style="font-size:15px">${esc(teamLabel(t, winIdx))}</span>
@@ -1858,7 +1873,7 @@ function render() {
       <div class="info-card">
         <h3>LE BASI</h3>
         <p>Tutti partono da <b>1000 punti</b>. Dopo ogni partita il vincitore prende punti e il perdente li perde: quello che guadagna una squadra è esattamente quello che perde l'altra. Il rating non misura quante partite hai vinto, ma <b>quanto sei forte rispetto agli altri</b>.</p>
-        <p>Le partite proposte dai giocatori entrano in classifica solo dopo la <b>conferma di un admin</b>, e i punti si calcolano con i rating al momento della conferma. Le partite dei tornei sono partite a tutti gli effetti: muovono l'ELO come le altre.</p>
+        <p>Le partite proposte dai giocatori entrano in classifica solo dopo la <b>conferma di un admin</b>, e i punti si calcolano con i rating al momento della conferma. Le partite dei tornei sono partite a tutti gli effetti e muovono l'ELO come le altre, a meno che l'admin non abbia creato il torneo come <b>"solo per la gloria"</b>: in quel caso il tabellone vive per conto suo e i rating non si toccano.</p>
       </div>
 
       <div class="info-card">
@@ -2027,6 +2042,11 @@ document.addEventListener("click", async (e) => {
     render();
     return;
   }
+  if (t.dataset.trated) {
+    state.tRated = t.dataset.trated === "1";
+    render();
+    return;
+  }
   if (t.dataset.histseason) {
     state.historySeason = t.dataset.histseason;
     render();
@@ -2135,6 +2155,12 @@ document.addEventListener("click", async (e) => {
   }
   if (t.id === "create-tournament") {
     return withBusy(createTournament);
+  }
+  if (t.dataset.deltournament) {
+    const tor = state.tournaments.find((x) => x.id === t.dataset.deltournament);
+    if (!tor) return;
+    if (!confirm(`Eliminare il torneo "${tor.name}"?\nLe partite già giocate restano nello storico e l'ELO non cambia: sparisce solo il tabellone.`)) return;
+    return withBusy(() => deleteTournament(tor.id));
   }
   if (t.dataset.trecord) {
     const [tid, r, i] = t.dataset.trecord.split("|");
