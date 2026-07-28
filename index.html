@@ -1074,7 +1074,10 @@ function historyMaps() {
     if (m.team_a.length === 2) { const k = pairKey(m.team_a[0], m.team_a[1]); teamed[k] = (teamed[k] ?? 0) + 1; }
     if (m.team_b.length === 2) { const k = pairKey(m.team_b[0], m.team_b[1]); teamed[k] = (teamed[k] ?? 0) + 1; }
   }
-  return { games, last, faced, teamed };
+  const rank = {};
+  const sorted = [...state.players].sort((a, b) => b.elo - a.elo);
+  sorted.forEach((p, i) => { rank[p.id] = sorted.length > 1 ? i / (sorted.length - 1) : 0; });
+  return { games, last, faced, teamed, rank };
 }
 
 // Dalla terza partita dello stesso giorno tra le stesse squadre il delta si dimezza:
@@ -1095,7 +1098,7 @@ function repetitionFactor(idsA, idsB, refDate) {
 
 function scorePairing(A, B, maps, opts = {}) {
   const { requireNew = true, balanceWeight = 0.1, activityWeight = 1, ignoreRoles = false } = opts;
-  const { games, faced, teamed } = maps;
+  const { games, faced, teamed, rank } = maps;
   if (!ignoreRoles) {
     const doubleAttack = (T) => roleOf(T[0]) === "attaccante" && roleOf(T[1]) === "attaccante";
     if (doubleAttack(A) || doubleAttack(B)) return null;
@@ -1106,6 +1109,15 @@ function scorePairing(A, B, maps, opts = {}) {
   }).length;
   const cross = [[A[0], B[0]], [A[0], B[1]], [A[1], B[0]], [A[1], B[1]]];
   const newFaced = cross.filter(([x, y]) => !faced[pairKey(x.id, y.id)]).length;
+  // rompi-pareggi: sfide mai giocate tra ELO vicini valgono di piu',
+  // soprattutto in cima alla classifica (ma anche in fondo contano)
+  let tieBreak = 0;
+  for (const [x, y] of cross) {
+    if (faced[pairKey(x.id, y.id)]) continue;
+    const prox = Math.max(0, 1 - Math.abs(x.elo - y.elo) / 60);
+    const height = 2 - ((rank[x.id] ?? 0.5) + (rank[y.id] ?? 0.5)) / 2;
+    tieBreak += prox * height * 12;
+  }
   const newTeams =
     (teamed[pairKey(A[0].id, A[1].id)] ? 0 : 1) +
     (teamed[pairKey(B[0].id, B[1].id)] ? 0 : 1);
@@ -1118,6 +1130,7 @@ function scorePairing(A, B, maps, opts = {}) {
   const gap = Math.abs(r2(A[0], A[1]) - r2(B[0], B[1]));
   const score =
     newFaced * 30 + newTeams * 20 + compl * 8
+    + tieBreak
     - Math.min(habit, 10) * 6
     + Math.min(activity, 40) * activityWeight
     - gap * balanceWeight;
@@ -1899,7 +1912,7 @@ function render() {
           <tr><td>Partita senza punteggio (solo chi ha vinto)</td><td class="neg">×0.5</td></tr>
           <tr><td>Dalla 3ª partita dello stesso giorno tra le stesse squadre</td><td class="neg">×0.5</td></tr>
         </table>
-        <p style="margin-top:8px">Le <b>partite consigliate</b> sono 2v2 suggeriti nella scheda Partita tra chi sta giocando in questo periodo: <b>coppie mescolate e sfide mai giocate</b>, perché l'ELO diventa più preciso quando tutti giocano con e contro tutti, mentre le coppie fisse rendono i rating confrontabili solo tra loro. Chi non gioca da più di due mesi non viene proposto, e l'algoritmo rispetta i ruoli: <b>mai due attaccanti nella stessa coppia</b>, con preferenza per attaccante+difensore.</p>
+        <p style="margin-top:8px">Le <b>partite consigliate</b> sono 2v2 suggeriti nella scheda Partita tra chi sta giocando in questo periodo: <b>coppie mescolate e sfide mai giocate</b>, perché l'ELO diventa più preciso quando tutti giocano con e contro tutti, mentre le coppie fisse rendono i rating confrontabili solo tra loro. Chi non gioca da più di due mesi non viene proposto, e l'algoritmo rispetta i ruoli: <b>mai due attaccanti nella stessa coppia</b>, con preferenza per attaccante+difensore. Priorità agli <b>scontri diretti mai giocati tra chi ha un ELO vicino</b>: sono le partite che rompono i pareggi in classifica, con un occhio di riguardo per le posizioni di vertice ma senza dimenticare il fondo.</p>
         <p>I bonus ⭐ valgono solo giocando la <b>formazione esatta</b> accettata con "Usa": cambi anche un solo giocatore e il bonus decade. Da 8 presenti in su l'app propone <b>due tavoli con persone distinte</b>: il <b>Tavolo 1</b>, la partita con più senso tra i presenti, vale <b>sempre ×1.25</b>; il Tavolo 2 solo se porta incroci o coppie mai viste. Sotto gli 8 presenti, il tavolo singolo prende il bonus solo se porta qualcosa di nuovo.</p>
         <p>I fattori si <b>moltiplicano tra loro</b>: una consigliata vinta 10-0 vale 2.4 × 1.4 ≈ <b>3.4 volte</b> una vittoria base, mentre la quinta rivincita della serata contro la stessa coppia, per giunta senza punteggio, vale 0.5 × 0.5 = <b>un quarto</b>. Il perché è sempre lo stesso: il sistema premia le partite che gli dicono qualcosa di nuovo e sconta quelle che ripetono informazione già nota.</p>
       </div>
