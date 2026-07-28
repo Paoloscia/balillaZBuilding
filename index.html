@@ -1877,7 +1877,8 @@ function render() {
           <tr><td>Partita senza punteggio (solo chi ha vinto)</td><td class="neg">×0.5</td></tr>
           <tr><td>Dalla 3ª partita dello stesso giorno tra le stesse squadre</td><td class="neg">×0.5</td></tr>
         </table>
-        <p style="margin-top:8px">I bonus ⭐ valgono solo giocando la <b>formazione esatta</b> accettata con "Usa": cambi anche un solo giocatore e il bonus decade. Da 8 presenti in su l'app propone <b>due tavoli con persone distinte</b>: il <b>Tavolo 1</b>, la partita con più senso tra i presenti, vale <b>sempre ×1.25</b>; il Tavolo 2 solo se porta incroci o coppie mai viste. Sotto gli 8 presenti, il tavolo singolo prende il bonus solo se porta qualcosa di nuovo.</p>
+        <p style="margin-top:8px">Le <b>partite consigliate</b> sono 2v2 suggeriti nella scheda Partita tra chi sta giocando in questo periodo: <b>coppie mescolate e sfide mai giocate</b>, perché l'ELO diventa più preciso quando tutti giocano con e contro tutti, mentre le coppie fisse rendono i rating confrontabili solo tra loro. Chi non gioca da più di due mesi non viene proposto, e l'algoritmo rispetta i ruoli: <b>mai due attaccanti nella stessa coppia</b>, con preferenza per attaccante+difensore.</p>
+        <p>I bonus ⭐ valgono solo giocando la <b>formazione esatta</b> accettata con "Usa": cambi anche un solo giocatore e il bonus decade. Da 8 presenti in su l'app propone <b>due tavoli con persone distinte</b>: il <b>Tavolo 1</b>, la partita con più senso tra i presenti, vale <b>sempre ×1.25</b>; il Tavolo 2 solo se porta incroci o coppie mai viste. Sotto gli 8 presenti, il tavolo singolo prende il bonus solo se porta qualcosa di nuovo.</p>
         <p>I fattori si <b>moltiplicano tra loro</b>: una consigliata vinta 10-0 vale 2.4 × 1.4 ≈ <b>3.4 volte</b> una vittoria base, mentre la quinta rivincita della serata contro la stessa coppia, per giunta senza punteggio, vale 0.5 × 0.5 = <b>un quarto</b>. Il perché è sempre lo stesso: il sistema premia le partite che gli dicono qualcosa di nuovo e sconta quelle che ripetono informazione già nota.</p>
       </div>
 
@@ -1906,11 +1907,6 @@ function render() {
         <p>Quando l'admin chiude una stagione, la classifica finale viene <b>archiviata nell'albo d'oro</b> e si riparte <b>a scaglioni</b>: chi ha chiuso in alto conserva un vantaggio compresso, così il sistema ricorda chi è più forte e non gli regala punti facili contro chi è ripartito da meno.</p>
         <div class="formula">1250+ → 1150 · 1150+ → 1100 · 1050+ → 1050<br>950+ → 1000 · 850+ → 950 · 750+ → 900 · sotto → 850</div>
         <p>Le stagioni si possono <b>pianificare in anticipo</b>: alla chiusura di quella in corso, parte automaticamente la prossima in coda. Ogni stagione è un campionato a sé: vincerla conta più del rating assoluto.</p>
-      </div>
-
-      <div class="info-card">
-        <h3>PARTITE CONSIGLIATE</h3>
-        <p>Nella scheda Partita trovi 2v2 suggeriti tra chi sta giocando in questo periodo: <b>coppie mescolate e sfide mai giocate</b>. L'ELO diventa più preciso quando tutti giocano con e contro tutti; le coppie fisse rendono i rating confrontabili solo tra loro. Chi non gioca da più di due mesi non viene proposto, e l'algoritmo rispetta i ruoli: <b>mai due attaccanti nella stessa coppia</b>, con preferenza per le coppie attaccante+difensore.</p>
       </div>
 
       <div class="info-card">
