@@ -64,7 +64,6 @@
     line-height: 1;
     text-shadow: 0 3px 0 rgba(0,0,0,0.35);
   }
-  .subtitle { font-size: 13px; opacity: 0.75; margin-top: 6px; font-style: italic; }
   .deadline { font-size: 12px; margin-top: 5px; letter-spacing: 0.03em; font-weight: 600; opacity: 0.9; }
 
   nav {
@@ -473,7 +472,6 @@
   <header>
     <div class="eyebrow" id="season-eyebrow">TRA AMICI</div>
     <h1>CALCETTO</h1>
-    <div class="subtitle">classifica ELO del balilla</div>
     <div class="deadline" id="season-deadline" style="display:none"></div>
   </header>
   <nav id="nav"></nav>
@@ -1874,8 +1872,12 @@ function render() {
       html += `<div class="section-label">PIANIFICATE</div>`;
       html += planned.map((s) =>
         `<div class="row">
-          <div class="player-name" style="flex:1">${esc(s.name)}</div>
-          <div class="meta">in coda</div>
+          <div style="flex:1;min-width:0">
+            <div class="player-name">${esc(s.name)}</div>
+            <div class="meta">in coda${s.ends_at ? ` · fine prevista ${fmtDate(s.ends_at, false)}` : ""}</div>
+            ${isAdmin() ? `<input type="date" data-seasonend="${s.id}" value="${s.ends_at ? s.ends_at.slice(0, 10) : ""}"
+              style="margin-top:6px;padding:7px 10px;border:none;border-radius:7px;font-size:13px;background:var(--cream);color:#1c1c1c">` : ""}
+          </div>
           ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina">✏️</button>
           <button class="del-btn" data-delseason="${s.id}">✕</button>` : ""}
         </div>`).join("");
