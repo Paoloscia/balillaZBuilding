@@ -1372,14 +1372,22 @@ function qualification(p) {
 
 // ---------- Premi di fine stagione ----------
 function computeAwards(all) {
-  const streakCur = {}, streakBest = {}, startElo = {}, games = {};
+  const streakCur = {}, streakBest = {}, startElo = {}, games = {}, winsOf = {};
+  const opps = {}, mates = {};
   const pairs = {};
   for (const m of all) {
     const winners = m.winners ?? [];
     for (const id of [...m.team_a, ...m.team_b]) {
       games[id] = (games[id] ?? 0) + 1;
       if (m.pre && m.pre[id] != null && !(id in startElo)) startElo[id] = m.pre[id];
+      const own = m.team_a.includes(id) ? m.team_a : m.team_b;
+      const other = m.team_a.includes(id) ? m.team_b : m.team_a;
+      (opps[id] ??= new Set());
+      (mates[id] ??= new Set());
+      for (const o of other) opps[id].add(o);
+      for (const mt of own) if (mt !== id) mates[id].add(mt);
       if (winners.includes(id)) {
+        winsOf[id] = (winsOf[id] ?? 0) + 1;
         streakCur[id] = (streakCur[id] ?? 0) + 1;
         streakBest[id] = Math.max(streakBest[id] ?? 0, streakCur[id]);
       } else streakCur[id] = 0;
@@ -1404,7 +1412,19 @@ function computeAwards(all) {
   const cl = top(startElo, (id) => (byId(id) ? byId(id).elo - startElo[id] : null));
   const bp = Object.values(pairs).filter((p) => p.w + p.l >= 3)
     .sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l) || b.w - a.w)[0] ?? null;
+  // miglior win rate tra i CLASSIFICATI (stessi requisiti della classifica)
+  let wr = null;
+  for (const id of Object.keys(games)) {
+    if (games[id] < QUAL.games) continue;
+    if ((opps[id]?.size ?? 0) < QUAL.opps || (mates[id]?.size ?? 0) < QUAL.mates) continue;
+    const w = winsOf[id] ?? 0;
+    const rate = w / games[id];
+    if (!wr || rate > wr.rate || (rate === wr.rate && w > wr.w)) {
+      wr = { id, rate, w, l: games[id] - w };
+    }
+  }
   const awards = {};
+  if (wr) awards.winrate = { name: nameOf(wr.id), pct: Math.round(wr.rate * 100), w: wr.w, l: wr.l };
   if (st) awards.streak = { name: nameOf(st.id), n: st.v };
   if (g) awards.games = { name: nameOf(g.id), n: g.v };
   if (cl && cl.v > 0) awards.climber = { name: nameOf(cl.id), delta: Math.round(cl.v) };
@@ -2311,6 +2331,7 @@ function render() {
         const others = res.length > 3 ? `<div class="meta" style="margin-top:6px">e altri ${res.length - 3} giocatori</div>` : "";
         const aw = s.awards ?? {};
         const awLines = [
+          aw.winrate ? `🎯 Miglior win rate: <b>${esc(aw.winrate.name)}</b> (${aw.winrate.pct}%, ${aw.winrate.w}V–${aw.winrate.l}S)` : "",
           aw.streak ? `🔥 Striscia migliore: <b>${esc(aw.streak.name)}</b> (${aw.streak.n}V)` : "",
           aw.games ? `🎮 Più partite: <b>${esc(aw.games.name)}</b> (${aw.games.n})` : "",
           aw.climber ? `📈 Scalata della stagione: <b>${esc(aw.climber.name)}</b> (+${aw.climber.delta})` : "",
