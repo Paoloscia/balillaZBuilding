@@ -544,8 +544,7 @@ const TV = new URLSearchParams(location.search).has("tv");
 const K = 32;
 const HANDICAP = 0.25;     // quanto pesa lo sbilanciamento interno della coppia
 const NO_SCORE_BASE = 0.5; // valore di una partita senza punteggio (10-9 ≈ 0.7)
-const SUGGESTED_BOOST = 1.4;  // le partite consigliate del giorno
-const LINEUP_BOOST = 1.25;    // i tavoli di "Chi c'e' oggi", se portano incroci nuovi
+const LINEUP_BOOST = 1.25; // i tavoli di "Chi c'e' oggi", se meritano il bonus
 
 const expectedScore = (ra, rb) => 1 / (1 + Math.pow(10, (rb - ra) / 400));
 
@@ -1325,34 +1324,6 @@ function scorePairing(A, B, maps, opts = {}) {
   return { A, B, newFaced, newTeams, gap, score };
 }
 
-function suggestedMatches() {
-  const now = Date.now();
-  const MAX_AGE = 60 * 24 * 3600 * 1000;
-  const maps = historyMaps();
-  const active = state.players.filter((p) => maps.last[p.id] && now - maps.last[p.id] <= MAX_AGE);
-  if (active.length < 4) return [];
-  const cands = [];
-  for (let i = 0; i < active.length; i++)
-    for (let j = i + 1; j < active.length; j++)
-      for (let k = j + 1; k < active.length; k++)
-        for (let l = k + 1; l < active.length; l++) {
-          const q = [active[i], active[j], active[k], active[l]];
-          for (const [[a1, a2], [b1, b2]] of PAIRINGS) {
-            const c = scorePairing([q[a1], q[a2]], [q[b1], q[b2]], maps);
-            if (c) cands.push(c);
-          }
-        }
-  cands.sort((x, y) => y.score - x.score);
-  const out = [];
-  for (const c of cands) {
-    const ids = new Set([...c.A, ...c.B].map((p) => p.id));
-    const overlap = out.some((o) => [...o.A, ...o.B].filter((p) => ids.has(p.id)).length >= 3);
-    if (!overlap) out.push(c);
-    if (out.length === 3) break;
-  }
-  return out;
-}
-
 // Le due coppie migliori tra i presenti: equilibrio prima di tutto,
 // precedenza a chi ha giocato meno, ruoli rispettati quando possibile.
 function bestLineup(ids) {
@@ -2023,25 +1994,6 @@ function render() {
       <div style="margin-bottom:8px">${chips}</div>
       ${lineupHTML}`;
 
-    const sugg = suggestedMatches();
-    const suggHTML = sugg.length
-      ? `<div class="section-label" style="margin-top:26px">PARTITE CONSIGLIATE</div>
-         <div class="meta" style="margin-bottom:8px">2v2 con coppie mescolate e sfide nuove: aiutano a calcolare meglio i rank.</div>` +
-        sugg.map(({ A, B, newFaced, newTeams }) => {
-          const bits = [];
-          if (newFaced) bits.push(`${newFaced} sfide mai giocate`);
-          if (newTeams) bits.push(newTeams === 2 ? "coppie inedite" : "una coppia inedita");
-          return `<div class="row">
-            <div style="flex:1">
-              <div class="player-name" style="font-size:14px">${esc(A[0].name)} + ${esc(A[1].name)} <span style="opacity:0.6">vs</span> ${esc(B[0].name)} + ${esc(B[1].name)}</div>
-              <div class="meta">${bits.join(" · ")}</div>
-              <div style="margin-top:4px"><span class="boost-badge">⭐ VALE ×${SUGGESTED_BOOST}</span></div>
-            </div>
-            <button class="use-btn" data-suggest="${A[0].id}|${A[1].id}|${B[0].id}|${B[1].id}" data-boostval="${SUGGESTED_BOOST}">Usa</button>
-          </div>`;
-        }).join("")
-      : "";
-
     app.innerHTML = `
       <div class="mode-row">
         <button data-mode="1v1" class="${state.mode === "1v1" ? "active" : ""}">1v1</button>
@@ -2062,8 +2014,7 @@ function render() {
       <button class="cta${isSugg ? " cta-boost" : ""}" id="save-match" ${valid && !state.busy ? "" : "disabled"}>
         ${isAdmin() ? "Registra partita" : "Invia partita"}${isSugg ? " · ⭐ ×" + boostVal : ""}
       </button>
-      ${whoHTML}
-      ${suggHTML}`;
+      ${whoHTML}`;
     return;
   }
 
@@ -2406,14 +2357,13 @@ function render() {
         <h3>BONUS E MALUS: TUTTI I MOLTIPLICATORI</h3>
         <p>Oltre al punteggio, il delta di ogni partita viene moltiplicato da questi fattori:</p>
         <table class="example-table">
-          <tr><td>⭐ Partita consigliata del giorno</td><td class="pos">×1.4</td></tr>
           <tr><td>⭐ Tavolo consigliato da "Chi c'è oggi"</td><td class="pos">×1.25</td></tr>
           <tr><td>Partita senza punteggio (solo chi ha vinto)</td><td class="neg">×0.5</td></tr>
           <tr><td>Dalla 3ª partita dello stesso giorno tra le stesse squadre</td><td class="neg">×0.5</td></tr>
         </table>
-        <p style="margin-top:8px">Le <b>partite consigliate</b> sono 2v2 suggeriti nella scheda Partita tra chi sta giocando in questo periodo: <b>coppie mescolate e sfide mai giocate</b>, perché l'ELO diventa più preciso quando tutti giocano con e contro tutti, mentre le coppie fisse rendono i rating confrontabili solo tra loro. Chi non gioca da più di due mesi non viene proposto, e l'algoritmo rispetta i ruoli: <b>mai due attaccanti nella stessa coppia</b>, con preferenza per attaccante+difensore. Priorità agli <b>scontri diretti mai giocati tra chi ha un ELO vicino</b>: sono le partite che rompono i pareggi in classifica, con un occhio di riguardo per le posizioni di vertice ma senza dimenticare il fondo.</p>
+        <p style="margin-top:8px">I <b>tavoli di "Chi c'è oggi"</b> sono le formazioni che l'app compone tra i presenti selezionati: coppie mescolate, squadre equilibrate, precedenza a chi ha giocato meno e ruoli rispettati (<b>mai due attaccanti insieme</b>, preferenza attaccante+difensore). Priorità agli <b>scontri diretti mai giocati tra chi ha un ELO vicino</b>: sono le partite che rompono i pareggi in classifica, con un occhio di riguardo per il vertice ma senza dimenticare il fondo.</p>
         <p>I bonus ⭐ valgono solo giocando la <b>formazione esatta</b> accettata con "Usa": cambi anche un solo giocatore e il bonus decade. Da 8 presenti in su l'app propone <b>due tavoli con persone distinte</b>: il <b>Tavolo 1</b>, la partita con più senso tra i presenti, vale <b>sempre ×1.25</b>; il Tavolo 2 solo se porta incroci o coppie mai viste. Sotto gli 8 presenti, il tavolo singolo prende il bonus solo se porta qualcosa di nuovo.</p>
-        <p>I fattori si <b>moltiplicano tra loro</b>: una consigliata vinta 10-0 vale 2.4 × 1.4 ≈ <b>3.4 volte</b> una vittoria base, mentre la quinta rivincita della serata contro la stessa coppia, per giunta senza punteggio, vale 0.5 × 0.5 = <b>un quarto</b>. Il perché è sempre lo stesso: il sistema premia le partite che gli dicono qualcosa di nuovo e sconta quelle che ripetono informazione già nota.</p>
+        <p>I fattori si <b>moltiplicano tra loro</b>: un tavolo consigliato vinto 10-0 vale 2.4 × 1.25 = <b>3 volte</b> una vittoria base, mentre la quinta rivincita della serata contro la stessa coppia, per giunta senza punteggio, vale 0.5 × 0.5 = <b>un quarto</b>. Il perché è sempre lo stesso: il sistema premia le partite che gli dicono qualcosa di nuovo e sconta quelle che ripetono informazione già nota.</p>
       </div>
 
       <div class="info-card">
