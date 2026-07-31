@@ -196,29 +196,18 @@
     background: var(--cream); color: #1c1c1c;
     font-size: 14px;
   }
-  .score-num { font-family: var(--font-display); font-size: 34px; text-align: center; margin-top: 2px; }
+  .score-ctrl { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 4px; }
+  .score-ctrl button {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,0.08);
+    color: var(--cream);
+    font-size: 20px; cursor: pointer; line-height: 1;
+  }
+  .score-num { font-family: var(--font-display); font-size: 34px; min-width: 44px; text-align: center; }
   .team-card.red .score-num { color: var(--red-light); }
   .team-card.blue .score-num { color: var(--blue-light); }
-  .score-grid {
-    display: grid;
-    grid-template-columns: repeat(6, 1fr);
-    gap: 5px;
-    margin-top: 6px;
-  }
-  .score-grid button {
-    padding: 9px 0;
-    border: none;
-    border-radius: 8px;
-    background: rgba(0,0,0,0.28);
-    color: var(--cream);
-    font-size: 15px;
-    font-weight: 700;
-    cursor: pointer;
-  }
-  .score-grid button.sel {
-    background: var(--cream);
-    color: #1c1c1c;
-  }
   .win-btn {
     margin-top: 4px;
     padding: 12px 0;
@@ -1925,11 +1914,10 @@ function render() {
         ? `<button class="win-btn ${state.winnerSide === side ? "active" : ""}" data-winner="${side}">
             ${state.winnerSide === side ? "🏆 VITTORIA" : "Vittoria"}
           </button>`
-        : `<div class="score-num">${score}</div>
-          <div class="score-grid">
-            ${Array.from({ length: 11 }, (_, n) =>
-              `<button data-score="${side}" data-val="${n}" class="${score === n ? "sel" : ""}">${n}</button>`
-            ).join("")}
+        : `<div class="score-ctrl">
+            <button data-score="${side}" data-dir="-1">−</button>
+            <div class="score-num">${score}</div>
+            <button data-score="${side}" data-dir="1">+</button>
           </div>`;
       return `<div class="team-card ${cls}">
         <div class="team-label">${label}</div>
@@ -2394,4 +2382,476 @@ function render() {
           <tr><td>Partita senza punteggio (solo chi ha vinto)</td><td class="neg">×0.5</td></tr>
           <tr><td>Dalla 3ª partita dello stesso giorno tra le stesse squadre</td><td class="neg">×0.5</td></tr>
         </table>
-        <p style="margin-top:8px">I <b>tavoli di "Chi c'è oggi"</b> sono le formazioni che l'app compone tra i presenti selezionati: coppie mescolate, squadre equilibrate, precedenza a chi ha giocato meno e ruoli rispettati (<b>mai due attaccanti insieme</b>, preferenza attaccante+difensore). Priorità agli <b>scontri diretti mai giocati tra chi ha un ELO vicino</b>: sono le partite che rompono i pareggi in classifica, con un occhio di riguardo per il vertice ma senza dimenticare 
+        <p style="margin-top:8px">I <b>tavoli di "Chi c'è oggi"</b> sono le formazioni che l'app compone tra i presenti selezionati: coppie mescolate, squadre equilibrate, precedenza a chi ha giocato meno e ruoli rispettati (<b>mai due attaccanti insieme</b>, preferenza attaccante+difensore). Priorità agli <b>scontri diretti mai giocati tra chi ha un ELO vicino</b>: sono le partite che rompono i pareggi in classifica, con un occhio di riguardo per il vertice ma senza dimenticare il fondo.</p>
+        <p>I bonus ⭐ valgono solo giocando la <b>formazione esatta</b> accettata con "Usa": cambi anche un solo giocatore e il bonus decade. Da 8 presenti in su l'app propone <b>due tavoli con persone distinte</b>: il <b>Tavolo 1</b>, la partita con più senso tra i presenti, vale <b>sempre ×1.25</b>; il Tavolo 2 solo se porta incroci o coppie mai viste. Sotto gli 8 presenti, il tavolo singolo prende il bonus solo se porta qualcosa di nuovo.</p>
+        <p>I fattori si <b>moltiplicano tra loro</b>: un tavolo consigliato vinto 10-0 vale 2.4 × 1.25 = <b>3 volte</b> una vittoria base, mentre la quinta rivincita della serata contro la stessa coppia, per giunta senza punteggio, vale 0.5 × 0.5 = <b>un quarto</b>. Il perché è sempre lo stesso: il sistema premia le partite che gli dicono qualcosa di nuovo e sconta quelle che ripetono informazione già nota.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>IL 2v2, IL COMPAGNO E LA COPPIA SBILANCIATA</h3>
+        <p>Il rating di squadra parte dalla <b>media</b> dei due giocatori, ma una coppia sbilanciata vale meno della sua media: al balilla l'anello debole pesa più di quanto il forte possa compensare. Quindi:</p>
+        <div class="formula">ratingSquadra = media − 0.25 × |elo1 − elo2|</div>
+        <p>Una coppia 1300+700 non vale 1000 ma <b>850</b>: parte sfavorita contro due da 1000. Questo protegge il giocatore forte con un compagno molto scarso: se perdete, la sconfitta era già messa in conto e i punti persi sono pochi. Se vincete, valgono di più.</p>
+        <p>Il bottino viene poi diviso in base ai rating individuali: se vinci, <b>il più debole della coppia prende la fetta più grande</b> (ha sovraperformato). Se perdete, <b>il più forte perde di più</b>, ma su un totale già ridotto dallo sbilanciamento.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>ESEMPIO CONCRETO</h3>
+        <p>Marco (1100) e Luca (900) battono 10-3 una coppia da 1000 e 1000. La media sarebbe pari, ma con la correzione la coppia vale 950 e parte sfavorita (43%). Vittoria larga da sfavoriti: montepremi di circa 78 punti.</p>
+        <table class="example-table">
+          <tr><td>Luca (900, il più debole)</td><td class="pos">+43</td></tr>
+          <tr><td>Marco (1100, il più forte)</td><td class="pos">+35</td></tr>
+          <tr><td>Avversario 1 (1000)</td><td class="neg">−39</td></tr>
+          <tr><td>Avversario 2 (1000)</td><td class="neg">−39</td></tr>
+        </table>
+        <p style="margin-top:8px">Stessa partita finita 10-9: montepremi di circa 26 punti. E se Marco e Luca avessero perso, avrebbero pagato poco: partivano sfavoriti.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>LE STAGIONI</h3>
+        <p>Quando l'admin chiude una stagione, la classifica finale viene <b>archiviata nell'albo d'oro</b> e si riparte <b>a scaglioni</b>: chi ha chiuso in alto conserva un vantaggio compresso, così il sistema ricorda chi è più forte e non gli regala punti facili contro chi è ripartito da meno.</p>
+        <div class="formula">1250+ → 1150 · 1150+ → 1100 · 1050+ → 1050<br>950+ → 1000 · 850+ → 950 · 750+ → 900 · sotto → 850</div>
+        <p>Le stagioni si possono <b>pianificare in anticipo</b>: alla chiusura di quella in corso, parte automaticamente la prossima in coda. Ogni stagione è un campionato a sé: vincerla conta più del rating assoluto.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>CHI ENTRA IN CLASSIFICA</h3>
+        <p>Per comparire in classifica servono, nella stagione: <b>10 partite</b>, <b>6 avversari diversi</b> e <b>3 compagni diversi</b>. Chi non ci arriva è tra i "non classificati" con un ELO provvisorio: poche partite, o sempre contro le stesse persone, producono un rating non confrontabile con gli altri.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>IN PRATICA</h3>
+        <p>Vuoi salire in fretta? Sfida chi sta sopra di te, gioca in coppia col più scarso e vinci largo. Vuoi difendere il primo posto? Non ti conviene nasconderti: contro i deboli hai poco da guadagnare e tanto da perdere.</p>
+      </div>`;
+    return;
+  }
+
+  // ---------- GIOCATORI ----------
+  if (tab === "rosa") {
+    const rows = [...players].sort(byName).map((p) => {
+      const role = roleOf(p);
+      const roleUI = isAdmin()
+        ? `<select class="role-select" data-roleplayer="${p.id}">
+            ${["difensore", "attaccante", "ibrido"].map((r) =>
+              `<option value="${r}" ${r === role ? "selected" : ""}>${ROLE_LABEL[r]}</option>`).join("")}
+          </select>`
+        : `<span class="meta" style="margin-top:0;white-space:nowrap">${ROLE_LABEL[role]}</span>`;
+      const tot = state.totals[p.id] ?? { wins: 0, losses: 0 };
+      return `<div class="row">
+        <div style="flex:1;min-width:0">
+          <div class="player-name">${esc(p.name)}</div>
+          <div class="meta">ELO ${p.elo} · totale: ${tot.wins}V–${tot.losses}S (${tot.wins + tot.losses} partite)</div>
+        </div>
+        ${roleUI}
+        ${isAdmin() ? `<button class="edit-btn" data-rename="${p.id}" title="Rinomina">✏️</button>` : ""}
+      </div>`;
+    }).join("");
+
+    const addForm = isAdmin()
+      ? `<div class="add-row">
+          <input id="new-name" placeholder="Nome giocatore" maxlength="30">
+          <button id="add-player">Aggiungi</button>
+        </div>`
+      : `<div class="add-row">
+          <input id="req-name" placeholder="Proponi un giocatore" maxlength="30">
+          <button id="request-player">Proponi</button>
+        </div>`;
+
+    const requestsHTML = state.requests.length
+      ? `<div class="section-label">RICHIESTE DI AGGIUNTA (${state.requests.length})</div>` +
+        state.requests.map((r) =>
+          `<div class="match-row pending">
+            <div style="flex:1">
+              <div class="player-name">${esc(r.name)}</div>
+              <div class="meta">proposto il ${fmtDate(r.created_at)}</div>
+              ${isAdmin() ? `<div class="confirm-actions">
+                <button class="btn-confirm" data-approvereq="${r.id}">Conferma</button>
+                <button class="btn-reject" data-rejectreq="${r.id}">Rifiuta</button>
+              </div>` : ""}
+            </div>
+          </div>`).join("") +
+        `<div style="height:10px"></div>`
+      : "";
+
+    const authBox = isAdmin()
+      ? `<div class="auth-box">
+          <div class="meta" style="margin-bottom:8px">Admin: ${esc(state.session.user.email)}</div>
+          <button class="undo" id="backup">Scarica backup dati (JSON)</button>
+          <button class="undo" id="logout" style="margin-bottom:0">Esci</button>
+        </div>`
+      : `<div class="auth-box">
+          <div class="meta" style="margin-bottom:8px">Accesso admin</div>
+          <input id="login-email" type="email" placeholder="Email" autocomplete="username">
+          <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+          <button class="cta" id="login" style="font-size:14px;padding:11px 0">Accedi</button>
+        </div>`;
+
+    app.innerHTML = `
+      ${addForm}
+      ${requestsHTML}
+      ${rows || `<div class="empty">Nessun giocatore in rosa.</div>`}
+      ${authBox}
+      <div class="foot-note">Chiunque può vedere tutto e proporre partite; solo gli admin confermano, gestiscono rosa, stagioni e tornei.</div>`;
+  }
+}
+
+// ---------- Realtime ----------
+let rtTimer;
+function subscribeRealtime() {
+  sb.channel("db-changes")
+    .on("postgres_changes", { event: "*", schema: "public" }, () => {
+      clearTimeout(rtTimer);
+      rtTimer = setTimeout(async () => {
+        if (state.busy) return;
+        await loadAll();
+        render();
+      }, 500);
+    })
+    .subscribe();
+}
+
+// ---------- Eventi ----------
+async function withBusy(fn) {
+  if (state.busy) return;
+  state.busy = true;
+  setLoading(true);
+  render();
+  try {
+    await fn();
+    await loadAll();
+  } finally {
+    state.busy = false;
+    setLoading(false);
+    render();
+  }
+}
+
+document.addEventListener("click", async (e) => {
+  if (TV) return;
+  const t = e.target;
+
+  if (t.dataset.tab) {
+    state.tab = t.dataset.tab;
+    state.profileId = null;
+    setLoading(true);
+    await loadAll();
+    setLoading(false);
+    render();
+    return;
+  }
+  if (t.id === "profile-back") {
+    state.profileId = null;
+    render();
+    return;
+  }
+  const profEl = e.target.closest?.("[data-profile]");
+  if (profEl && !e.target.closest("button")) {
+    const pid = profEl.dataset.profile;
+    state.profileId = pid;
+    state.h2hId = null;
+    state.profileMatches = null;
+    render();
+    (async () => {
+      setLoading(true);
+      try {
+        const { data, error } = await sb.from("matches").select("*").eq("status", "confirmed")
+          .or(`team_a.cs.{${pid}},team_b.cs.{${pid}}`)
+          .order("confirmed_at", { ascending: true });
+        if (!error && data && state.profileId === pid) {
+          state.profileMatches = data;
+          render();
+        }
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return;
+  }
+  if (t.dataset.tformat) {
+    state.tFormat = t.dataset.tformat;
+    render();
+    return;
+  }
+  if (t.dataset.trated) {
+    state.tRated = t.dataset.trated === "1";
+    render();
+    return;
+  }
+  if (t.dataset.tsignup) {
+    state.tSignup = t.dataset.tsignup === "1";
+    render();
+    return;
+  }
+  if (t.dataset.histseason) {
+    state.historySeason = t.dataset.histseason;
+    render();
+    return;
+  }
+  if (t.dataset.mode) {
+    state.mode = t.dataset.mode;
+    state.teamA = ["", ""];
+    state.teamB = ["", ""];
+    render();
+    return;
+  }
+  if (t.dataset.scoremode) {
+    state.noScore = t.dataset.scoremode === "noscore";
+    state.winnerSide = null;
+    render();
+    return;
+  }
+  if (t.dataset.winner) {
+    state.winnerSide = t.dataset.winner;
+    render();
+    return;
+  }
+  if (t.dataset.present) {
+    const id = t.dataset.present;
+    const idx = state.present.indexOf(id);
+    if (idx >= 0) state.present.splice(idx, 1); else state.present.push(id);
+    render();
+    return;
+  }
+  if (t.dataset.score) {
+    const key = t.dataset.score === "A" ? "scoreA" : "scoreB";
+    state[key] = Math.max(0, state[key] + Number(t.dataset.dir));
+    render();
+    return;
+  }
+  if (t.dataset.suggest) {
+    const [a1, a2, b1, b2] = t.dataset.suggest.split("|");
+    state.mode = "2v2";
+    state.noScore = false;
+    state.winnerSide = null;
+    state.teamA = [a1, a2];
+    state.teamB = [b1, b2];
+    const bv = parseFloat(t.dataset.boostval ?? "1");
+    if (bv > 1) {
+      state.suggestedList = state.suggestedList.filter((s) =>
+        !((teamSetEq(s.a, [a1, a2]) && teamSetEq(s.b, [b1, b2])) ||
+          (teamSetEq(s.a, [b1, b2]) && teamSetEq(s.b, [a1, a2]))));
+      state.suggestedList.push({ a: [a1, a2], b: [b1, b2], boost: bv });
+    }
+    state.scoreA = 0;
+    state.scoreB = 0;
+    render();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
+  if (t.id === "save-match") return withBusy(recordMatch);
+  if (t.dataset.confirm) return withBusy(() => confirmMatch(t.dataset.confirm));
+  if (t.dataset.reject) {
+    if (!confirm("Rifiutare questa partita? Verrà eliminata.")) return;
+    return withBusy(() => rejectMatch(t.dataset.reject));
+  }
+  if (t.id === "undo") {
+    if (!confirm("Annullare l'ultima partita confermata?")) return;
+    return withBusy(undoLast);
+  }
+  if (t.id === "create-season") {
+    const name = document.getElementById("new-season-name").value.trim();
+    if (!name) { toast("Dai un nome alla stagione", false); return; }
+    const endRaw = document.getElementById("new-season-end")?.value;
+    const endsAt = endRaw ? new Date(endRaw + "T23:59:59").toISOString() : null;
+    return withBusy(() => createSeason(name, endsAt));
+  }
+  if (t.id === "recalc-season") {
+    if (!confirm("Ricalcolare tutta la stagione?\nTutte le partite confermate vengono rigiocate in ordine cronologico e i rating riscritti. Può richiedere qualche secondo.")) return;
+    return withBusy(recalcSeason);
+  }
+  if (t.id === "backup") {
+    setLoading(true);
+    downloadBackup().finally(() => setLoading(false));
+    return;
+  }
+  if (t.id === "close-season") {
+    const s = activeSeason();
+    if (!s) return;
+    const next = plannedSeasons().sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0];
+    const pendCount = state.pending.filter((m) => m.season_id === s.id).length;
+    const warn = pendCount ? `\n\nAttenzione: ${pendCount} partite in attesa resteranno non conteggiate.` : "";
+    const after = next ? `Partirà subito "${next.name}".` : "Non partirà nessuna stagione finché non ne crei una.";
+    if (!confirm(`Chiudere "${s.name}"?\nLa classifica va nell'albo d'oro e si riparte a scaglioni in base al rating finale.\n${after}${warn}`)) return;
+    return withBusy(closeSeason);
+  }
+  if (t.dataset.renameseason) {
+    const s = seasonById(t.dataset.renameseason);
+    if (!s) return;
+    const newName = prompt(`Nuovo nome per "${s.name}":`, s.name);
+    if (newName == null) return;
+    const clean = newName.trim().slice(0, 40);
+    if (!clean || clean === s.name) return;
+    return withBusy(() => renameSeason(s.id, clean));
+  }
+  if (t.dataset.delseason) {
+    const s = seasonById(t.dataset.delseason);
+    if (!s || s.active || s.ended_at) return;
+    if (!confirm(`Eliminare la stagione pianificata "${s.name}"?`)) return;
+    return withBusy(() => deletePlannedSeason(s.id));
+  }
+  if (t.id === "t-addpair") {
+    state.tPairs.push(["", ""]);
+    render();
+    return;
+  }
+  if (t.dataset.tremovepair != null) {
+    state.tPairs.splice(Number(t.dataset.tremovepair), 1);
+    render();
+    return;
+  }
+  if (t.id === "create-tournament") {
+    return withBusy(createTournament);
+  }
+  if (t.dataset.claim) {
+    const [tid, ti, slot] = t.dataset.claim.split("|");
+    const sel = document.getElementById(`su-${tid}-${ti}-${slot}`);
+    const pid = sel?.value;
+    if (!pid) { toast("Scegli un giocatore per il posto", false); return; }
+    if (!confirm(`Confermare ${nameOf(pid)} in questo posto? Non si potrà più cambiare.`)) return;
+    return withBusy(() => claimSlot(tid, Number(ti), Number(slot), pid));
+  }
+  if (t.dataset.addpair) {
+    return withBusy(() => addSignupPair(t.dataset.addpair));
+  }
+  if (t.dataset.delpair) {
+    const [tid, ti] = t.dataset.delpair.split("|");
+    const tor = state.tournaments.find((x) => x.id === tid);
+    const pair = tor?.teams[Number(ti)];
+    if (!pair) return;
+    const who = [pair.p1, pair.p2].filter(Boolean).map(nameOf).join(" + ");
+    if (!confirm(who ? `Rimuovere la coppia con ${who}?` : "Rimuovere questa coppia vuota?")) return;
+    return withBusy(() => removeSignupPair(tid, Number(ti)));
+  }
+  if (t.dataset.starttournament) {
+    const tor = state.tournaments.find((x) => x.id === t.dataset.starttournament);
+    if (!tor) return;
+    if (!confirm(`Avviare "${tor.name}"? Le coppie diventano teste di serie e le iscrizioni si chiudono.`)) return;
+    return withBusy(() => startTournament(tor));
+  }
+  if (t.dataset.deltournament) {
+    const tor = state.tournaments.find((x) => x.id === t.dataset.deltournament);
+    if (!tor) return;
+    if (!confirm(`Eliminare il torneo "${tor.name}"?\nLe partite già giocate restano nello storico e l'ELO non cambia: sparisce solo il tabellone.`)) return;
+    return withBusy(() => deleteTournament(tor.id));
+  }
+  if (t.dataset.trecord) {
+    const [tid, r, i] = t.dataset.trecord.split("|");
+    const sa = parseInt(document.getElementById(`ts-${tid}-${r}-${i}-a`)?.value, 10);
+    const sbv = parseInt(document.getElementById(`ts-${tid}-${r}-${i}-b`)?.value, 10);
+    if (Number.isNaN(sa) || Number.isNaN(sbv)) { toast("Inserisci entrambi i punteggi", false); return; }
+    return withBusy(() => recordTournamentMatch(tid, Number(r), Number(i), sa, sbv));
+  }
+  if (t.dataset.rename) {
+    const p = byId(t.dataset.rename);
+    if (!p) return;
+    const newName = prompt(`Nuovo nome per "${p.name}":`, p.name);
+    if (newName == null) return;
+    const clean = newName.trim().slice(0, 30);
+    if (!clean || clean === p.name) return;
+    return withBusy(() => renamePlayer(p.id, clean));
+  }
+  if (t.id === "add-player") {
+    const name = document.getElementById("new-name").value.trim();
+    if (!name) return;
+    return withBusy(() => addPlayer(name));
+  }
+  if (t.id === "request-player") {
+    const name = document.getElementById("req-name").value.trim();
+    if (!name) return;
+    return withBusy(() => requestPlayer(name));
+  }
+  if (t.dataset.approvereq) {
+    const r = state.requests.find((x) => x.id === t.dataset.approvereq);
+    if (!r) return;
+    return withBusy(() => approveRequest(r));
+  }
+  if (t.dataset.rejectreq) {
+    if (!confirm("Rifiutare questa richiesta?")) return;
+    return withBusy(() => rejectRequest(t.dataset.rejectreq));
+  }
+  if (t.id === "login") {
+    const email = document.getElementById("login-email").value.trim();
+    const password = document.getElementById("login-pass").value;
+    if (!email || !password) return;
+    setLoading(true);
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    setLoading(false);
+    if (error) { toast("Credenziali non valide", false); return; }
+    toast("Accesso effettuato");
+    return;
+  }
+  if (t.id === "logout") {
+    await sb.auth.signOut();
+    toast("Sei uscito");
+    return;
+  }
+});
+
+document.addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.dataset.team) {
+    const team = t.dataset.team === "red" ? state.teamA : state.teamB;
+    team[Number(t.dataset.slot)] = t.value;
+    render();
+    return;
+  }
+  if (t.dataset.tpair != null) {
+    state.tPairs[Number(t.dataset.tpair)][Number(t.dataset.tslot)] = t.value;
+    render();
+    return;
+  }
+  if (t.dataset.roleplayer) {
+    withBusy(() => setRole(t.dataset.roleplayer, t.value));
+    return;
+  }
+  if (t.dataset.h2h) {
+    state.h2hId = t.value || null;
+    render();
+    return;
+  }
+  if (t.dataset.adminslot) {
+    const [tid, ti, slot] = t.dataset.adminslot.split("|");
+    withBusy(() => setSignupSlot(tid, Number(ti), Number(slot), t.value || null));
+    return;
+  }
+  if (t.dataset.seasonend) {
+    const iso = t.value ? new Date(t.value + "T23:59:59").toISOString() : null;
+    withBusy(async () => {
+      const { error } = await sb.from("seasons").update({ ends_at: iso }).eq("id", t.dataset.seasonend);
+      if (error) toast("Errore nel salvataggio della data", false);
+      else toast(iso ? "Data di fine impostata" : "Data di fine rimossa");
+    });
+  }
+});
+
+document.addEventListener("input", (e) => {
+  if (e.target.id === "t-name") state.tName = e.target.value;
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  if (e.target.id === "new-name") document.getElementById("add-player")?.click();
+  if (e.target.id === "req-name") document.getElementById("request-player")?.click();
+  if (e.target.id === "login-email" || e.target.id === "login-pass") document.getElementById("login")?.click();
+  if (e.target.id === "new-season-name") document.getElementById("create-season")?.click();
+});
+
+// ---------- Avvio ----------
+const { data: sessionData } = await sb.auth.getSession();
+state.session = sessionData.session;
+sb.auth.onAuthStateChange((_event, session) => {
+  state.session = session;
+  render();
+});
+
+if (TV) document.body.classList.add("tv");
+await loadAll();
+render();
+subscribeRealtime();
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>
