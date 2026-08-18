@@ -213,6 +213,20 @@
   }
   .team-card.red .score-grid button.sel { background: var(--red); border-color: var(--red); color: #fff; }
   .team-card.blue .score-grid button.sel { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .score-grid input {
+    width: 100%;
+    padding: 9px 2px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,0.08);
+    color: var(--cream);
+    font-family: var(--font-display);
+    font-size: 14px;
+    text-align: center;
+  }
+  .score-grid input::placeholder { color: var(--cream); opacity: 0.5; font-size: 12px; }
+  .team-card.red .score-grid input.sel { background: var(--red); border-color: var(--red); color: #fff; }
+  .team-card.blue .score-grid input.sel { background: var(--blue); border-color: var(--blue); color: #fff; }
   .win-btn {
     margin-top: 4px;
     padding: 12px 0;
@@ -1941,6 +1955,9 @@ function render() {
         : `<div class="score-grid">
             ${Array.from({ length: 11 }, (_, n) =>
               `<button data-score="${side}" data-val="${n}" class="${score === n ? "sel" : ""}">${n}</button>`).join("")}
+            <input type="number" inputmode="numeric" min="0" placeholder="10+"
+              data-scorefree="${side}" class="${score > 10 ? "sel" : ""}"
+              value="${score > 10 ? score : ""}">
           </div>`;
       return `<div class="team-card ${cls}">
         <div class="team-label">${label}</div>
@@ -2835,6 +2852,13 @@ document.addEventListener("change", (e) => {
   if (t.dataset.adminslot) {
     const [tid, ti, slot] = t.dataset.adminslot.split("|");
     withBusy(() => setSignupSlot(tid, Number(ti), Number(slot), t.value || null));
+    return;
+  }
+  if (t.dataset.scorefree) {
+    const key = t.dataset.scorefree === "A" ? "scoreA" : "scoreB";
+    const v = parseInt(t.value, 10);
+    if (!Number.isNaN(v) && v >= 0) state[key] = v;
+    render();
     return;
   }
   if (t.dataset.seasonend) {
