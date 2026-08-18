@@ -565,6 +565,7 @@ const K = 32;
 const HANDICAP = 0.25;     // quanto pesa lo sbilanciamento interno della coppia
 const NO_SCORE_BASE = 0.5; // valore di una partita senza punteggio (10-9 ≈ 0.7)
 const LINEUP_BOOST = 1.25; // i tavoli di "Chi c'e' oggi", se meritano il bonus
+const INACTIVE_DAYS = 21;  // giorni senza partite dopo cui compare l'etichetta "inattivo" (nessun effetto su ELO o classifica)
 
 const expectedScore = (ra, rb) => 1 / (1 + Math.pow(10, (rb - ra) / 400));
 
@@ -669,6 +670,53 @@ function buildBracket(teamCount) {
 const ROUND_NAMES = ["FINALE", "SEMIFINALI", "QUARTI", "OTTAVI", "SEDICESIMI"];
 const roundName = (r, total) => ROUND_NAMES[total - 1 - r] ?? `TURNO ${r + 1}`;
 
+const FMT_LABEL = {
+  elim: "eliminazione",
+  doppia: "doppia eliminazione",
+  girone: "girone",
+  gironefinale: "girone + finale",
+};
+
+// Doppia eliminazione: tabellone vincenti + ripescaggio + finalissima.
+// Richiede un numero di coppie potenza di 2 (4, 8, 16), niente bye,
+// niente reset del bracket alla finalissima (una partita secca).
+function buildDoubleElim(teamCount) {
+  const w = buildBracket(teamCount);
+  const k = Math.log2(teamCount);
+  const sizes = [];
+  let s = teamCount / 4;
+  for (let r = 0; r < 2 * k - 2; r++) {
+    sizes.push(Math.max(1, s));
+    if (r % 2 === 1) s = Math.floor(s / 2) || 1;
+  }
+  const l = sizes.map((n) => Array.from({ length: n }, () => ({ a: null, b: null, winner: null, score: null })));
+  const gf = [{ a: null, b: null, winner: null, score: null }];
+  return { w, l, gf };
+}
+
+function buildBracketFor(fmt, teams) {
+  if (fmt === "girone" || fmt === "gironefinale") {
+    const fixtures = [];
+    for (let i = 0; i < teams.length; i++)
+      for (let j = i + 1; j < teams.length; j++)
+        fixtures.push({ a: i, b: j, winner: null, score: null });
+    return fmt === "girone"
+      ? [fixtures]
+      : [fixtures, [{ a: null, b: null, winner: null, score: null }]];
+  }
+  if (fmt === "doppia") return buildDoubleElim(teams.length);
+  return buildBracket(teams.length);
+}
+
+// Vincitore di un torneo concluso, qualunque sia il formato.
+function tournamentWinnerIdx(t) {
+  const fmt = t.format ?? "elim";
+  if (fmt === "girone") return gironeStandings(t)[0]?.i ?? null;
+  if (fmt === "gironefinale") return t.bracket[1]?.[0]?.winner ?? null;
+  if (fmt === "doppia") return t.bracket.gf?.[0]?.winner ?? null;
+  return t.bracket[t.bracket.length - 1][0].winner;
+}
+
 // ---------- Stato ----------
 const state = {
   players: [],
@@ -681,6 +729,13 @@ const state = {
   totals: {}, // player_id -> { wins, losses } di sempre
   tab: "classifica",
   historySeason: "all",
+  historyPlayer: "all",
+  historyLimit: 50,
+  challenges: [],
+  challengesOk: true,
+  numeri: null, // record di sempre, calcolati on demand
+  tAuto: false,
+  tAutoIds: [],
   tPairs: [["", ""], ["", ""]],
   tName: "",
   tFormat: "elim",
@@ -715,6 +770,7 @@ const TABS = [
   ["tornei", "Tornei"],
   ["stagioni", "Stagioni"],
   ["rosa", "Giocatori"],
+  ["numeri", "Numeri"],
   ["elo", "ELO"],
 ];
 
@@ -749,7 +805,7 @@ const fmtDate = (iso, withTime = true) =>
 
 // ---------- Dati ----------
 async function loadAll() {
-  const [pRes, sRes, rRes, mRes, pendRes, tRes, reqRes, totRes] = await Promise.all([
+  const [pRes, sRes, rRes, mRes, pendRes, tRes, reqRes, totRes, chRes] = await Promise.all([
     sb.from("players").select("*").order("elo", { ascending: false }),
     sb.from("seasons").select("*").order("created_at", { ascending: false }),
     sb.from("season_results").select("*").order("rank", { ascending: true }),
@@ -760,6 +816,7 @@ async function loadAll() {
     sb.from("tournaments").select("*").order("created_at", { ascending: false }),
     sb.from("player_requests").select("*").order("created_at", { ascending: true }),
     sb.from("player_totals").select("*"),
+    sb.from("challenges").select("*").order("created_at", { ascending: false }),
   ]);
   // Tabelle indispensabili: senza queste l'app non funziona.
   const core = { players: pRes, seasons: sRes, season_results: rRes, matches: mRes, pending: pendRes, tournaments: tRes };
@@ -790,12 +847,22 @@ async function loadAll() {
   } else {
     state.totals = Object.fromEntries(totRes.data.map((r) => [r.player_id, r]));
   }
+  // Sfide dirette: tabella opzionale, se manca la sezione si nasconde da sola.
+  if (chRes.error) {
+    state.challenges = [];
+    state.challengesOk = false;
+  } else {
+    state.challenges = chRes.data;
+    state.challengesOk = true;
+  }
 
   state.results = {};
   for (const r of rRes.data) (state.results[r.season_id] ??= []).push(r);
 
   if (state.historySeason !== "all" && !state.seasons.some((s) => s.id === state.historySeason))
     state.historySeason = "all";
+  if (state.historyPlayer !== "all" && !state.players.some((p) => p.id === state.historyPlayer))
+    state.historyPlayer = "all";
 }
 
 async function addPlayer(name) {
@@ -1091,6 +1158,16 @@ async function closeSeason() {
     .order("confirmed_at", { ascending: true });
   if (allSeason) awards = computeAwards(allSeason);
 
+  // Chiusura ATOMICA lato database (supabase-chiusura-backup.sql):
+  // snapshot, chiusura, reset a scaglioni e avvio della prossima in una
+  // sola transazione. Se la funzione non esiste, si usa il vecchio
+  // percorso a passi qui sotto.
+  const rpc = await sb.rpc("close_season", { p_awards: awards });
+  if (!rpc.error) {
+    toast("Stagione chiusa e archiviata");
+    return;
+  }
+
   // 1) snapshot nell'albo d'oro
   const ranked = [...state.players].sort((a, b) => b.elo - a.elo);
   const rows = ranked.map((p, i) => ({
@@ -1151,6 +1228,9 @@ async function createTournament() {
     const flat = state.tPairs.flat().filter(Boolean);
     if (new Set(flat).size !== flat.length) { toast("Un giocatore è in più coppie", false); return; }
     const teams = state.tPairs.map(([p1, p2]) => ({ p1: p1 || null, p2: p2 || null }));
+    if (state.tFormat === "doppia" && ![4, 8, 16].includes(teams.length)) {
+      toast("La doppia eliminazione richiede 4, 8 o 16 coppie", false); return;
+    }
     const { error } = await sb.from("tournaments").insert({
       name, season_id: season.id, teams, bracket: [],
       format: state.tFormat, rated: state.tRated, status: "signup",
@@ -1164,27 +1244,34 @@ async function createTournament() {
     return;
   }
 
-  const pairs = state.tPairs.filter((p) => p[0] && p[1]);
-  const flat = pairs.flat();
-  if (pairs.length < 2 || pairs.length !== state.tPairs.length) {
-    toast("Completa tutte le coppie (minimo 2)", false); return;
+  let pairs;
+  if (state.tAuto) {
+    // coppie generate dall'app: il piu' forte col piu' debole, a scendere
+    const ids = state.tAutoIds.filter((id) => byId(id));
+    if (ids.length < 4 || ids.length % 2 !== 0) {
+      toast("Coppie automatiche: seleziona un numero pari di giocatori, almeno 4", false); return;
+    }
+    const sortedPs = ids.map(byId).sort((a, b) => b.elo - a.elo);
+    pairs = [];
+    for (let i = 0; i < sortedPs.length / 2; i++)
+      pairs.push([sortedPs[i].id, sortedPs[sortedPs.length - 1 - i].id]);
+  } else {
+    pairs = state.tPairs.filter((p) => p[0] && p[1]);
+    const flat = pairs.flat();
+    if (pairs.length < 2 || pairs.length !== state.tPairs.length) {
+      toast("Completa tutte le coppie (minimo 2)", false); return;
+    }
+    if (new Set(flat).size !== flat.length) {
+      toast("Un giocatore è in più coppie", false); return;
+    }
   }
-  if (new Set(flat).size !== flat.length) {
-    toast("Un giocatore è in più coppie", false); return;
+  if (state.tFormat === "doppia" && ![4, 8, 16].includes(pairs.length)) {
+    toast("La doppia eliminazione richiede 4, 8 o 16 coppie", false); return;
   }
   // teste di serie: coppie ordinate per rating
   const sorted = [...pairs].sort((x, y) => pairRating(y) - pairRating(x));
   const teams = sorted.map(([p1, p2]) => ({ p1, p2 }));
-  let bracket;
-  if (state.tFormat === "girone") {
-    const fixtures = [];
-    for (let i = 0; i < teams.length; i++)
-      for (let j = i + 1; j < teams.length; j++)
-        fixtures.push({ a: i, b: j, winner: null, score: null });
-    bracket = [fixtures];
-  } else {
-    bracket = buildBracket(teams.length);
-  }
+  const bracket = buildBracketFor(state.tFormat, teams);
 
   const { error } = await sb.from("tournaments").insert({
     name, season_id: season.id, teams, bracket, format: state.tFormat,
@@ -1194,6 +1281,8 @@ async function createTournament() {
   state.tName = "";
   state.tPairs = [["", ""], ["", ""]];
   state.tRated = true;
+  state.tAuto = false;
+  state.tAutoIds = [];
   toast(`Torneo "${name}" creato`);
 }
 
@@ -1247,18 +1336,12 @@ async function setSignupSlot(tid, ti, slot, playerId) {
 async function startTournament(t) {
   if (t.status !== "signup") return;
   if (t.teams.some((x) => !x.p1 || !x.p2)) { toast("Ci sono ancora posti vuoti", false); return; }
+  if ((t.format ?? "elim") === "doppia" && ![4, 8, 16].includes(t.teams.length)) {
+    toast("La doppia eliminazione richiede 4, 8 o 16 coppie", false); return;
+  }
   const sorted = [...t.teams].sort((a, b) =>
     pairRating([b.p1, b.p2]) - pairRating([a.p1, a.p2]));
-  let bracket;
-  if ((t.format ?? "elim") === "girone") {
-    const fixtures = [];
-    for (let i = 0; i < sorted.length; i++)
-      for (let j = i + 1; j < sorted.length; j++)
-        fixtures.push({ a: i, b: j, winner: null, score: null });
-    bracket = [fixtures];
-  } else {
-    bracket = buildBracket(sorted.length);
-  }
+  const bracket = buildBracketFor(t.format ?? "elim", sorted);
   const { error } = await sb.from("tournaments")
     .update({ teams: sorted, bracket, status: "open" }).eq("id", t.id);
   if (error) { toast("Errore nell'avvio", false); return; }
@@ -1271,14 +1354,19 @@ async function deleteTournament(id) {
   toast("Torneo eliminato");
 }
 
-async function recordTournamentMatch(tid, r, i, sa, sbv) {
+// sec: "m" per eliminazione/girone/finale del girone, "w"/"l"/"gf" per la doppia
+async function recordTournamentMatch(tid, sec, r, i, sa, sbv) {
   const t = state.tournaments.find((x) => x.id === tid);
   if (!t || t.status !== "open") return;
   if (!seasonById(t.season_id)?.active) {
     toast("La stagione del torneo è chiusa", false); return;
   }
   const bracket = t.bracket;
-  const m = bracket[r]?.[i];
+  const fmt = t.format ?? "elim";
+  const m = sec === "gf" ? bracket.gf?.[0]
+    : sec === "w" ? bracket.w?.[r]?.[i]
+    : sec === "l" ? bracket.l?.[r]?.[i]
+    : bracket[r]?.[i];
   if (!m || m.a == null || m.b == null || m.winner != null) return;
   if (!Number.isInteger(sa) || !Number.isInteger(sbv) || sa < 0 || sbv < 0 || sa === sbv) {
     toast("Punteggio non valido", false); return;
@@ -1296,10 +1384,55 @@ async function recordTournamentMatch(tid, r, i, sa, sbv) {
 
   m.winner = sa > sbv ? m.a : m.b;
   m.score = [sa, sbv];
-  const fmt = t.format ?? "elim";
+  const loser = m.winner === m.a ? m.b : m.a;
   let status = "open";
+
   if (fmt === "girone") {
     if (bracket[0].every((f) => f.winner != null)) status = "done";
+  } else if (fmt === "gironefinale") {
+    if (r === 0) {
+      // girone: quando finisce, le prime due vanno in finale
+      if (bracket[0].every((f) => f.winner != null)) {
+        const st = gironeStandings(t);
+        bracket[1][0].a = st[0].i;
+        bracket[1][0].b = st[1].i;
+      }
+    } else {
+      status = "done";
+    }
+  } else if (fmt === "doppia") {
+    if (sec === "w") {
+      if (r === bracket.w.length - 1) {
+        // finale dei vincenti: il vincitore va in finalissima,
+        // il perdente all'ultimo turno del ripescaggio
+        bracket.gf[0].a = m.winner;
+        bracket.l[bracket.l.length - 1][0].b = loser;
+      } else {
+        advance(bracket.w, r, i, m.winner);
+        if (r === 0) {
+          // i perdenti del primo turno si affrontano tra loro
+          const lm = bracket.l[0][Math.floor(i / 2)];
+          if (i % 2 === 0) lm.a = loser; else lm.b = loser;
+        } else {
+          // i perdenti dei turni successivi scendono nel turno "major"
+          bracket.l[2 * r - 1][i].b = loser;
+        }
+      }
+    } else if (sec === "l") {
+      if (r === bracket.l.length - 1) {
+        bracket.gf[0].b = m.winner;
+      } else {
+        const next = bracket.l[r + 1];
+        if (next.length === bracket.l[r].length) {
+          next[i].a = m.winner;
+        } else {
+          const nm = next[Math.floor(i / 2)];
+          if (i % 2 === 0) nm.a = m.winner; else nm.b = m.winner;
+        }
+      }
+    } else if (sec === "gf") {
+      status = "done";
+    }
   } else {
     advance(bracket, r, i, m.winner);
     if (bracket[bracket.length - 1][0].winner != null) status = "done";
@@ -1308,8 +1441,7 @@ async function recordTournamentMatch(tid, r, i, sa, sbv) {
   const upd = await sb.from("tournaments").update({ bracket, status }).eq("id", tid);
   if (upd.error) { toast("Partita salvata ma tabellone non aggiornato: ricarica", false); return; }
   if (status === "done") {
-    const winIdx = fmt === "girone" ? gironeStandings(t)[0].i : m.winner;
-    toast(`Torneo concluso! Vince ${teamLabel(t, winIdx)} 🏆`);
+    toast(`Torneo concluso! Vince ${teamLabel(t, tournamentWinnerIdx(t))} 🏆`);
   } else {
     toast("Risultato registrato");
   }
@@ -1345,10 +1477,10 @@ function gironeHTML(t, canRecord) {
   fixtures.forEach((m, i) => {
     const recordUI = canRecord && m.winner == null
       ? `<div class="b-record">
-          <input class="ts-input" type="number" min="0" id="ts-${t.id}-0-${i}-a" placeholder="0">
+          <input class="ts-input" type="number" min="0" id="ts-${t.id}-m-0-${i}-a" placeholder="0">
           <span style="opacity:0.6">–</span>
-          <input class="ts-input" type="number" min="0" id="ts-${t.id}-0-${i}-b" placeholder="0">
-          <button data-trecord="${t.id}|0|${i}">OK</button>
+          <input class="ts-input" type="number" min="0" id="ts-${t.id}-m-0-${i}-b" placeholder="0">
+          <button data-trecord="${t.id}|m|0|${i}">OK</button>
         </div>` : "";
     out += `<div class="b-match">
       <div class="b-team ${m.winner === m.a ? "winner" : ""}">${esc(teamLabel(t, m.a))}${m.score ? `<span class="b-score">${m.score[0]}</span>` : ""}</div>
@@ -1659,6 +1791,200 @@ async function downloadBackup() {
   }
 }
 
+// ---------- Sfide dirette ----------
+// Lo stato "saldata" non e' salvato: una sfida risulta saldata se, dopo il
+// lancio, esiste una partita confermata coi due su sponde opposte.
+function challengeStatus(c) {
+  const t0 = new Date(c.created_at);
+  for (const m of state.matches) {
+    if (new Date(m.confirmed_at ?? m.created_at) <= t0) continue;
+    const fromA = m.team_a.includes(c.from_id), fromB = m.team_b.includes(c.from_id);
+    const toA = m.team_a.includes(c.to_id), toB = m.team_b.includes(c.to_id);
+    if ((fromA && toB) || (fromB && toA)) return { done: true, m };
+  }
+  return { done: false, m: null };
+}
+
+// ---------- Inattivita' (solo etichetta, nessun effetto su ELO o rank) ----------
+function lastPlayedOf(pid) {
+  for (const m of state.matches)
+    if (m.team_a.includes(pid) || m.team_b.includes(pid))
+      return new Date(m.created_at).getTime();
+  return null;
+}
+
+// ---------- Riepilogo della serata ----------
+function buildDayRecap() {
+  const today = new Date().toDateString();
+  const ms = state.matches.filter((m) => new Date(m.created_at).toDateString() === today);
+  if (!ms.length) return { html: "", text: "" };
+  const gained = {};
+  for (const m of ms)
+    for (const id of Object.keys(m.deltas ?? {}))
+      gained[id] = (gained[id] ?? 0) + m.deltas[id];
+  const entries = Object.entries(gained).sort((a, b) => b[1] - a[1]);
+  const best = entries[0], worst = entries[entries.length - 1];
+  let upset = null;
+  for (const m of ms) {
+    if (!m.pre) continue;
+    const avg = (ids) => ids.reduce((s, id) => s + (m.pre[id] ?? 1000), 0) / ids.length;
+    const aWon = (m.winners ?? []).includes(m.team_a[0]);
+    const exp = expectedScore(avg(aWon ? m.team_a : m.team_b), avg(aWon ? m.team_b : m.team_a));
+    if (!upset || exp < upset.exp) upset = { exp, m };
+  }
+  let widest = null;
+  for (const m of ms) if (m.score_a != null) {
+    const diff = Math.abs(m.score_a - m.score_b);
+    if (!widest || diff > widest.diff) widest = { diff, m };
+  }
+  const mLine = (m) => `${m.team_a.map(nameOf).join("+")} ${m.score_a ?? "V"}–${m.score_b ?? "S"} ${m.team_b.map(nameOf).join("+")}`;
+  const lines = [];
+  if (best && best[1] > 0) lines.push(`In palla: ${nameOf(best[0])} +${best[1]}`);
+  if (worst && worst[1] < 0) lines.push(`Serata no: ${nameOf(worst[0])} ${worst[1]}`);
+  if (upset && upset.exp < 0.45) lines.push(`Sorpresa: ${mLine(upset.m)} (${Math.round(upset.exp * 100)}% di attesa)`);
+  if (widest && widest.diff >= 5) lines.push(`Mano pesante: ${mLine(widest.m)}`);
+  const text = [`Serata di oggi: ${ms.length} partite`, ...lines].join("\n");
+  const html = `<div class="info-card" style="margin-bottom:12px">
+    <h3>LA SERATA DI OGGI</h3>
+    <p class="meta">${ms.length} partite registrate oggi.</p>
+    ${lines.map((l) => `<p class="meta" style="margin-top:4px">${esc(l)}</p>`).join("")}
+    <button class="close-btn" data-copyrecap="1">Copia riepilogo</button>
+  </div>`;
+  return { html, text };
+}
+
+// ---------- Volata finale ----------
+function volataHTML(ranked) {
+  const s = activeSeason();
+  if (!s?.ends_at || ranked.length < 2) return "";
+  const days = Math.ceil((new Date(s.ends_at) - Date.now()) / 86400000);
+  if (days > 14 || days < 0) return "";
+  const top = ranked.slice(0, 5);
+  const leader = top[0];
+  const rows = top.slice(1).map((p) =>
+    `<p class="meta" style="margin-top:4px">${esc(p.name)} a <b>−${leader.elo - p.elo}</b></p>`).join("");
+  return `<div class="info-card" style="margin:12px 0">
+    <h3>VOLATA FINALE</h3>
+    <p class="meta">${days === 0 ? "Ultimo giorno" : `Mancano ${days} giorni`}: guida <b>${esc(leader.name)}</b> con ${leader.elo}.</p>
+    ${rows}
+  </div>`;
+}
+
+// ---------- Grafico di stagione condiviso ----------
+function seasonChartHTML(ranked) {
+  const sid = activeSeason()?.id;
+  if (!sid || ranked.length < 2) return "";
+  const ms = state.matches.filter((m) => m.season_id === sid && m.pre).slice().reverse();
+  if (ms.length < 3) return "";
+  const PALETTE = ["#E8B341", "#7CD9A0", "#F08A80", "#7FA8F0", "#D9A0F0", "#F0E68C", "#80E8E0", "#F0A050", "#B0F080", "#E080B0"];
+  const shown = ranked.slice(0, 10);
+  const series = new Map(shown.map((p) => [p.id, []]));
+  ms.forEach((m, i) => {
+    for (const id of [...m.team_a, ...m.team_b]) {
+      const arr = series.get(id);
+      if (!arr || m.pre[id] == null) continue;
+      if (!arr.length) arr.push([Math.max(0, i - 1), m.pre[id]]);
+      arr.push([i, m.pre[id] + (m.deltas?.[id] ?? 0)]);
+    }
+  });
+  let min = Infinity, max = -Infinity;
+  for (const arr of series.values())
+    for (const [, v] of arr) { min = Math.min(min, v); max = Math.max(max, v); }
+  if (!isFinite(min)) return "";
+  const span = Math.max(max - min, 20);
+  const W = 480, H = 200, PAD = 8;
+  const lastX = ms.length - 1 || 1;
+  const x = (i) => PAD + (i / lastX) * (W - 2 * PAD);
+  const y = (v) => H - PAD - ((v - min) / span) * (H - 2 * PAD);
+  let svg = "", legend = "";
+  shown.forEach((p, pi) => {
+    const arr = series.get(p.id);
+    if (!arr || arr.length < 2) return;
+    const pts = arr.map(([i, v]) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+    const col = PALETTE[pi % PALETTE.length];
+    svg += `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`;
+    legend += `<span class="chip" style="border-color:${col};color:${col}">${esc(p.name)}</span>`;
+  });
+  if (!svg) return "";
+  return `<div class="info-card" style="margin-top:18px">
+    <h3>ANDAMENTO STAGIONE</h3>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${svg}</svg>
+    <div class="meta" style="display:flex;justify-content:space-between;margin-bottom:6px"><span>min ${Math.round(min)}</span><span>max ${Math.round(max)}</span></div>
+    <div>${legend}</div>
+  </div>`;
+}
+
+// ---------- Record di sempre (scheda Numeri) ----------
+async function loadNumeri() {
+  setLoading(true);
+  try {
+    const all = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await sb.from("matches").select("*").eq("status", "confirmed")
+        .order("confirmed_at", { ascending: true }).range(from, from + 999);
+      if (error) { toast("Errore nel caricamento dei record", false); return; }
+      all.push(...data);
+      if (data.length < 1000) break;
+    }
+    state.numeri = computeNumeri(all);
+    render();
+  } finally {
+    setLoading(false);
+  }
+}
+
+function computeNumeri(all) {
+  let totGol = 0, widest = null, biggestSwing = null, upset = null;
+  const streakCur = {}, streakBest = {}, rival = {}, matesN = {}, byDay = {}, capp = {};
+  for (const m of all) {
+    if (m.score_a != null) {
+      totGol += m.score_a + m.score_b;
+      const diff = Math.abs(m.score_a - m.score_b);
+      if (!widest || diff > widest.diff) widest = { diff, m };
+      if (Math.min(m.score_a, m.score_b) === 0 && Math.max(m.score_a, m.score_b) >= 8)
+        for (const id of m.winners ?? []) capp[id] = (capp[id] ?? 0) + 1;
+    }
+    const swing = Object.values(m.deltas ?? {}).filter((d) => d > 0).reduce((s, d) => s + d, 0);
+    if (!biggestSwing || swing > biggestSwing.swing) biggestSwing = { swing, m };
+    if (m.pre) {
+      const avg = (ids) => ids.reduce((s, id) => s + (m.pre[id] ?? 1000), 0) / ids.length;
+      const aWon = (m.winners ?? []).includes(m.team_a[0]);
+      const exp = expectedScore(avg(aWon ? m.team_a : m.team_b), avg(aWon ? m.team_b : m.team_a));
+      if (!upset || exp < upset.exp) upset = { exp, m };
+    }
+    const day = new Date(m.created_at).toDateString();
+    byDay[day] = (byDay[day] ?? 0) + 1;
+    for (const a of m.team_a) for (const b of m.team_b) {
+      const k = pairKey(a, b);
+      rival[k] = (rival[k] ?? 0) + 1;
+    }
+    for (const team of [m.team_a, m.team_b]) if (team.length === 2) {
+      const k = pairKey(team[0], team[1]);
+      matesN[k] = (matesN[k] ?? 0) + 1;
+    }
+    for (const id of [...m.team_a, ...m.team_b]) {
+      if ((m.winners ?? []).includes(id)) {
+        streakCur[id] = (streakCur[id] ?? 0) + 1;
+        streakBest[id] = Math.max(streakBest[id] ?? 0, streakCur[id]);
+      } else streakCur[id] = 0;
+    }
+  }
+  const topOf = (obj) => {
+    let b = null;
+    for (const k of Object.keys(obj)) if (!b || obj[k] > obj[b]) b = k;
+    return b;
+  };
+  const st = topOf(streakBest), rv = topOf(rival), mt = topOf(matesN), dy = topOf(byDay), cp = topOf(capp);
+  return {
+    tot: all.length, totGol, widest, biggestSwing, upset,
+    streak: st ? { id: st, n: streakBest[st] } : null,
+    rival: rv ? { ids: rv.split("|"), n: rival[rv] } : null,
+    mate: mt ? { ids: mt.split("|"), n: matesN[mt] } : null,
+    day: dy ? { day: dy, n: byDay[dy] } : null,
+    capp: cp ? { id: cp, n: capp[cp] } : null,
+  };
+}
+
 // ---------- UI ----------
 let loadingCount = 0;
 function setLoading(on) {
@@ -1876,11 +2202,8 @@ function badgesOf(pid, d) {
   if (cucchiai) out.push({ icon: "🥄", label: `Cucchiaio di legno ×${cucchiai}` });
   const tornei = state.tournaments.filter((t) => {
     if (t.status !== "done") return false;
-    const fmt = t.format ?? "elim";
-    const winIdx = fmt === "girone"
-      ? gironeStandings(t)[0]?.i
-      : t.bracket[t.bracket.length - 1][0].winner;
-    const team = t.teams[winIdx];
+    const winIdx = tournamentWinnerIdx(t);
+    const team = winIdx == null ? null : t.teams[winIdx];
     return team && (team.p1 === pid || team.p2 === pid);
   }).length;
   if (tornei) out.push({ icon: "🏆", label: `Tornei vinti ×${tornei}` });
@@ -1988,6 +2311,9 @@ function render() {
       const form = formOf(p.id, season?.id ?? null);
       const dots = form.map((w) => `<span class="dot ${w ? "w" : "l"}"></span>`).join("");
       const streak = streakOf(form);
+      const lastTs = lastPlayedOf(p.id);
+      const inactiveDays = lastTs ? Math.floor((Date.now() - lastTs) / 86400000) : null;
+      const inactive = (p.wins + p.losses) > 0 && (lastTs == null || inactiveDays >= INACTIVE_DAYS);
       const missing = q
         ? `<div class="meta">${q.games}/${QUAL.games} partite · ${q.opps}/${QUAL.opps} avversari · ${q.mates}/${QUAL.mates} compagni</div>`
         : "";
@@ -1995,7 +2321,7 @@ function render() {
         <div class="rank ${i === 0 ? "gold" : ""}">${q ? "–" : i + 1}</div>
         <div style="flex:1">
           <div class="player-name">${esc(p.name)}</div>
-          <div class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}%` : ""}${streak ? " · " + streak : ""}</div>
+          <div class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}%` : ""}${streak ? " · " + streak : ""}${inactive ? ` · 💤 inattivo${inactiveDays != null ? ` da ${inactiveDays}g` : ""}` : ""}</div>
           ${missing}
           ${form.length ? `<div style="margin-top:4px">${dots}</div>` : ""}
         </div>
@@ -2009,7 +2335,8 @@ function render() {
           ? `Iscrizioni aperte per "${esc(signupTs[0].name)}"`
           : `${signupTs.length} tornei con iscrizioni aperte`} · tocca per iscriverti</div>`
       : "";
-    let out = signupNote + ranked.map((p, i) => rowHTML(p, i, null)).join("");
+    let out = signupNote + buildDayRecap().html + ranked.map((p, i) => rowHTML(p, i, null)).join("");
+    out += volataHTML(ranked);
     if (!ranked.length)
       out += `<div class="empty">Nessuno si è ancora qualificato: servono ${QUAL.games} partite, ${QUAL.opps} avversari e ${QUAL.mates} compagni diversi.</div>`;
     if (unranked.length) {
@@ -2017,6 +2344,8 @@ function render() {
         <div class="meta" style="margin-bottom:8px">ELO provvisorio: per la classifica servono ${QUAL.games} partite, ${QUAL.opps} avversari e ${QUAL.mates} compagni diversi nella stagione.</div>`;
       out += unranked.map((p) => rowHTML(p, -1, quals.get(p.id))).join("");
     }
+
+    out += seasonChartHTML(ranked);
 
     // migliori coppie della stagione (minimo 3 partite insieme)
     const pairStats = {};
@@ -2185,6 +2514,41 @@ function render() {
       ${lineupHTML}
       <div class="meta" style="margin-top:8px">ℹ️ I ruoli non vietano nulla e non toccano l'ELO: contano solo qui, come rompi-pareggi tra tavoli quasi equivalenti. A parità di tutto il resto si preferiscono le coppie che si incastrano (attaccante+difensore), con un filo di vantaggio per gli ibridi che si adattano a chiunque. Due attaccanti o due difensori insieme valgono uguale e possono comunque essere proposti.</div>`;
 
+    // sfide dirette
+    let sfideHTML = "";
+    if (state.challengesOk) {
+      const openCh = [], settledCh = [];
+      for (const c of state.challenges) {
+        if (!byId(c.from_id) || !byId(c.to_id)) continue;
+        const st = challengeStatus(c);
+        (st.done ? settledCh : openCh).push({ c, st });
+      }
+      const chOpts = `<option value="">— giocatore —</option>` + [...players].sort(byName).map((p) =>
+        `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+      const chRow = ({ c, st }) => {
+        const del = isAdmin() ? `<button class="del-btn" data-delchallenge="${c.id}">✕</button>` : "";
+        const res = st.done && st.m
+          ? `<div class="meta">saldata: ${st.m.team_a.map(nameOf).map(esc).join("+")} ${st.m.score_a ?? "V"}–${st.m.score_b ?? "S"} ${st.m.team_b.map(nameOf).map(esc).join("+")}</div>`
+          : `<div class="meta">lanciata il ${fmtDate(c.created_at, false)} · si salda alla prima partita coi due su sponde opposte</div>`;
+        return `<div class="row" style="${st.done ? "opacity:0.6" : ""}">
+          <div style="flex:1">
+            <div class="player-name" style="font-size:14px">${st.done ? "✅" : "🗡"} ${esc(nameOf(c.from_id))} sfida ${esc(nameOf(c.to_id))}</div>
+            ${res}
+          </div>
+          ${del}
+        </div>`;
+      };
+      sfideHTML = `<div class="section-label" style="margin-top:26px">SFIDE DIRETTE</div>
+        <div class="meta" style="margin-bottom:8px">Lancia una sfida: resta in sospeso finché i due non giocano su sponde opposte, in singolo o in coppia. Un conto aperto, sotto gli occhi di tutti.</div>
+        <div class="pair-row">
+          <select id="ch-from">${chOpts}</select>
+          <select id="ch-to">${chOpts}</select>
+          <button class="use-btn" data-newchallenge="1">Lancia</button>
+        </div>
+        ${openCh.map(chRow).join("") || `<div class="meta" style="margin-bottom:6px">Nessuna sfida in sospeso.</div>`}
+        ${settledCh.length ? `<div class="meta" style="margin:8px 0 4px;letter-spacing:0.1em">SALDATE DI RECENTE</div>` + settledCh.slice(0, 5).map(chRow).join("") : ""}`;
+    }
+
     app.innerHTML = `
       <div class="mode-row">
         <button data-mode="1v1" class="${state.mode === "1v1" ? "active" : ""}">1v1</button>
@@ -2205,7 +2569,8 @@ function render() {
       <button class="cta${isSugg ? " cta-boost" : ""}" id="save-match" ${valid && !state.busy ? "" : "disabled"}>
         ${isAdmin() ? "Registra partita" : "Invia partita"}${isSugg ? " · ⭐ ×" + boostVal : ""}
       </button>
-      ${whoHTML}`;
+      ${whoHTML}
+      ${sfideHTML}`;
     return;
   }
 
@@ -2220,25 +2585,38 @@ function render() {
         </div>`
       : "";
 
-    const inFilter = (m) => state.historySeason === "all" || m.season_id === state.historySeason;
+    const playerRow = state.players.length
+      ? `<div class="view-row">
+          <select data-histplayer="1" style="padding:7px 10px;border-radius:16px;border:1px solid var(--line);background:transparent;color:var(--cream);font-size:12px">
+            <option value="all" style="color:#1c1c1c">Tutti i giocatori</option>
+            ${[...state.players].sort(byName).map((p) =>
+              `<option value="${p.id}" style="color:#1c1c1c" ${state.historyPlayer === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+          </select>
+        </div>`
+      : "";
+    const inFilter = (m) =>
+      (state.historySeason === "all" || m.season_id === state.historySeason) &&
+      (state.historyPlayer === "all" || m.team_a.includes(state.historyPlayer) || m.team_b.includes(state.historyPlayer));
     const pend = pending.filter(inFilter);
     const conf = matches.filter(inFilter);
     const showSeason = state.historySeason === "all" && state.seasons.length > 1;
 
     if (!pend.length && !conf.length) {
-      app.innerHTML = `${filterRow}<div class="empty">Nessuna partita qui.</div>`;
+      app.innerHTML = `${filterRow}${playerRow}<div class="empty">Nessuna partita qui.</div>`;
       return;
     }
-    let html = filterRow;
+    let html = filterRow + playerRow;
     if (pend.length) {
       html += `<div class="section-label">DA CONFERMARE (${pend.length})</div>`;
       html += pend.map((m) => matchRowHTML(m, { pending: true, actions: isAdmin(), showSeason })).join("");
     }
     if (conf.length) {
-      html += `<div class="section-label">PARTITE</div>`;
+      html += `<div class="section-label">PARTITE (${conf.length})</div>`;
       if (isAdmin() && state.matches.length)
         html += `<button class="undo" id="undo">Annulla ultima partita</button>`;
-      html += conf.map((m) => matchRowHTML(m, { showSeason })).join("");
+      html += conf.slice(0, state.historyLimit).map((m) => matchRowHTML(m, { showSeason })).join("");
+      if (conf.length > state.historyLimit)
+        html += `<button class="undo" data-histmore="1" style="margin-top:6px">Mostra altre ${Math.min(50, conf.length - state.historyLimit)} partite</button>`;
     }
     app.innerHTML = html;
     return;
@@ -2268,12 +2646,21 @@ function render() {
           return `<div class="pair-row">${sel(0)}${sel(1)}${del}</div>`;
         }).join("");
 
+        const autoSet = new Set(state.tAutoIds);
+        const autoChips = `<div>` + [...players].sort(byName).map((p) =>
+          `<button class="chip ${autoSet.has(p.id) ? "chip-on" : ""}" data-tautosel="${p.id}">${esc(p.name)} (${p.elo})</button>`).join("") +
+          `</div><div class="meta">${state.tAutoIds.length} selezionati${state.tAutoIds.length >= 4 && state.tAutoIds.length % 2 === 0 ? ` · ${state.tAutoIds.length / 2} coppie` : ""}</div>`;
+
         html += `
           <div class="auth-box" style="margin-top:0;margin-bottom:18px">
-            <div class="meta" style="margin-bottom:4px">Nuovo torneo a coppie fisse: tabellone a eliminazione o girone all'italiana.</div>
+            <div class="meta" style="margin-bottom:4px">Nuovo torneo a coppie: eliminazione, doppia eliminazione (4/8/16 coppie), girone all'italiana o girone con finale tra le prime due.</div>
             <div class="mode-row" style="margin-bottom:0">
-              <button data-tformat="elim" class="${state.tFormat === "elim" ? "active" : ""}" style="font-size:12px">Eliminazione</button>
-              <button data-tformat="girone" class="${state.tFormat === "girone" ? "active" : ""}" style="font-size:12px">Girone</button>
+              <button data-tformat="elim" class="${state.tFormat === "elim" ? "active" : ""}" style="font-size:11px">Eliminazione</button>
+              <button data-tformat="doppia" class="${state.tFormat === "doppia" ? "active" : ""}" style="font-size:11px">Doppia elim.</button>
+            </div>
+            <div class="mode-row" style="margin-bottom:0">
+              <button data-tformat="girone" class="${state.tFormat === "girone" ? "active" : ""}" style="font-size:11px">Girone</button>
+              <button data-tformat="gironefinale" class="${state.tFormat === "gironefinale" ? "active" : ""}" style="font-size:11px">Girone + finale</button>
             </div>
             <div class="mode-row" style="margin-bottom:0">
               <button data-trated="1" class="${state.tRated ? "active" : ""}" style="font-size:12px">Vale per l'ELO</button>
@@ -2283,10 +2670,15 @@ function render() {
               <button data-tsignup="0" class="${!state.tSignup ? "active" : ""}" style="font-size:12px">Coppie complete</button>
               <button data-tsignup="1" class="${state.tSignup ? "active" : ""}" style="font-size:12px">Iscrizioni aperte</button>
             </div>
+            ${state.tSignup ? "" : `<div class="mode-row" style="margin-bottom:0">
+              <button data-tauto="0" class="${!state.tAuto ? "active" : ""}" style="font-size:12px">Coppie scelte</button>
+              <button data-tauto="1" class="${state.tAuto ? "active" : ""}" style="font-size:12px">Coppie automatiche</button>
+            </div>`}
             ${state.tSignup ? `<div class="meta">Puoi lasciare posti vuoti: li occuperà chi vuole partecipare, poi avvierai tu il torneo.</div>` : ""}
+            ${state.tAuto && !state.tSignup ? `<div class="meta">Seleziona i giocatori (numero pari, almeno 4): l'app forma coppie bilanciate accoppiando il più forte col più debole.</div>` : ""}
             <input id="t-name" placeholder="Nome torneo" maxlength="40" value="${esc(state.tName)}">
-            ${pairRows}
-            <button class="undo" id="t-addpair" style="margin-bottom:0">+ Aggiungi coppia</button>
+            ${state.tAuto && !state.tSignup ? autoChips : pairRows}
+            ${state.tAuto && !state.tSignup ? "" : `<button class="undo" id="t-addpair" style="margin-bottom:0">+ Aggiungi coppia</button>`}
             <button class="cta" id="create-tournament" style="font-size:14px;padding:11px 0">Crea torneo</button>
           </div>`;
       }
@@ -2345,7 +2737,7 @@ function render() {
           </button>` : "";
       html += `<div class="info-card">
         <h3>${esc(t.name).toUpperCase()}${isAdmin() ? `<button class="del-btn" data-deltournament="${t.id}" title="Elimina" style="float:right">✕</button>` : ""}</h3>
-        <p class="meta" style="margin-bottom:6px">${esc(seasonName(t.season_id))} · ${t.teams.length} coppie · ${filled}/${total} posti · ${(t.format ?? "elim") === "girone" ? "girone" : "eliminazione"}${t.rated === false ? " · non vale per l'ELO" : ""}</p>
+        <p class="meta" style="margin-bottom:6px">${esc(seasonName(t.season_id))} · ${t.teams.length} coppie · ${filled}/${total} posti · ${FMT_LABEL[t.format ?? "elim"]}${t.rated === false ? " · non vale per l'ELO" : ""}</p>
         <p class="meta" style="margin-bottom:8px">Scegli un posto libero e conferma: l'iscrizione non si può più cambiare${isAdmin() ? " (tu da admin puoi modificare tutto)" : ""}.</p>
         ${teamRows}
         ${addPairBtn}
@@ -2355,42 +2747,67 @@ function render() {
 
     if (openT.length) html += `<div class="section-label">IN CORSO</div>`;
     for (const t of openT) {
-      const rounds = t.bracket;
-      const total = rounds.length;
       const canRecord = isAdmin() && seasonById(t.season_id)?.active;
       const fmt = t.format ?? "elim";
+
+      const matchHTML = (m, sec, r, i) => {
+        const teamRow = (idx) => {
+          const won = m.winner != null && m.winner === idx;
+          const tbd = idx == null;
+          const score = m.score
+            ? `<span class="b-score">${idx === m.a ? m.score[0] : m.score[1]}</span>` : "";
+          return `<div class="b-team ${won ? "winner" : ""} ${tbd ? "tbd" : ""}">
+            ${won ? "🏆 " : ""}${esc(teamLabel(t, idx))}${score}
+          </div>`;
+        };
+        const recordUI = canRecord && m.a != null && m.b != null && m.winner == null
+          ? `<div class="b-record">
+              <input class="ts-input" type="number" min="0" id="ts-${t.id}-${sec}-${r}-${i}-a" placeholder="R">
+              <span style="opacity:0.6">–</span>
+              <input class="ts-input" type="number" min="0" id="ts-${t.id}-${sec}-${r}-${i}-b" placeholder="B">
+              <button data-trecord="${t.id}|${sec}|${r}|${i}">OK</button>
+            </div>` : "";
+        return `<div class="b-match">${teamRow(m.a)}${teamRow(m.b)}${recordUI}</div>`;
+      };
 
       let bracketHTML = "";
       if (fmt === "girone") {
         bracketHTML = gironeHTML(t, canRecord);
-      } else
-      rounds.forEach((round, r) => {
-        bracketHTML += `<div class="b-round"><div class="section-label">${roundName(r, total)}</div>`;
-        round.forEach((m, i) => {
-          const teamRow = (idx, other) => {
-            const won = m.winner != null && m.winner === idx;
-            const tbd = idx == null;
-            const score = m.score
-              ? `<span class="b-score">${idx === m.a ? m.score[0] : m.score[1]}</span>` : "";
-            return `<div class="b-team ${won ? "winner" : ""} ${tbd ? "tbd" : ""}">
-              ${won ? "🏆 " : ""}${esc(teamLabel(t, idx))}${score}
-            </div>`;
-          };
-          const recordUI = canRecord && m.a != null && m.b != null && m.winner == null
-            ? `<div class="b-record">
-                <input class="ts-input" type="number" min="0" id="ts-${t.id}-${r}-${i}-a" placeholder="R">
-                <span style="opacity:0.6">–</span>
-                <input class="ts-input" type="number" min="0" id="ts-${t.id}-${r}-${i}-b" placeholder="B">
-                <button data-trecord="${t.id}|${r}|${i}">OK</button>
-              </div>` : "";
-          bracketHTML += `<div class="b-match">${teamRow(m.a)}${teamRow(m.b)}${recordUI}</div>`;
+      } else if (fmt === "gironefinale") {
+        bracketHTML = gironeHTML(t, canRecord);
+        const fin = t.bracket[1]?.[0];
+        if (fin) {
+          bracketHTML += `<div class="section-label">FINALE</div>`;
+          bracketHTML += fin.a == null
+            ? `<div class="b-match"><div class="b-team tbd">le prime due del girone, a girone finito</div></div>`
+            : matchHTML(fin, "m", 1, 0);
+        }
+      } else if (fmt === "doppia") {
+        const br = t.bracket;
+        br.w.forEach((round, r) => {
+          bracketHTML += `<div class="b-round"><div class="section-label">VINCENTI · ${roundName(r, br.w.length)}</div>`;
+          round.forEach((m, i) => { bracketHTML += matchHTML(m, "w", r, i); });
+          bracketHTML += `</div>`;
         });
-        bracketHTML += `</div>`;
-      });
+        br.l.forEach((round, r) => {
+          bracketHTML += `<div class="b-round"><div class="section-label">RIPESCAGGIO ${r + 1}</div>`;
+          round.forEach((m, i) => { bracketHTML += matchHTML(m, "l", r, i); });
+          bracketHTML += `</div>`;
+        });
+        bracketHTML += `<div class="b-round"><div class="section-label">FINALISSIMA</div>${matchHTML(br.gf[0], "gf", 0, 0)}</div>`;
+      } else {
+        const rounds = t.bracket;
+        const total = rounds.length;
+        rounds.forEach((round, r) => {
+          bracketHTML += `<div class="b-round"><div class="section-label">${roundName(r, total)}</div>`;
+          round.forEach((m, i) => { bracketHTML += matchHTML(m, "m", r, i); });
+          bracketHTML += `</div>`;
+        });
+      }
 
       html += `<div class="info-card">
         <h3>${esc(t.name).toUpperCase()}${isAdmin() ? `<button class="del-btn" data-deltournament="${t.id}" title="Elimina" style="float:right">✕</button>` : ""}</h3>
-        <p class="meta" style="margin-bottom:10px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie · ${fmt === "girone" ? "girone" : "eliminazione"}${t.rated === false ? " · non vale per l'ELO" : ""}</p>
+        <p class="meta" style="margin-bottom:10px">${esc(seasonName(t.season_id))} · ${fmtDate(t.created_at, false)} · ${t.teams.length} coppie · ${FMT_LABEL[fmt]}${t.rated === false ? " · non vale per l'ELO" : ""}</p>
         ${bracketHTML}
       </div>`;
     }
@@ -2399,21 +2816,24 @@ function render() {
       html += `<div class="section-label" style="margin-top:22px">ALBO TORNEI</div>`;
       for (const t of doneT) {
         const fmt = t.format ?? "elim";
-        let winIdx, detail;
+        const winIdx = tournamentWinnerIdx(t);
+        let detail;
+        const finaleDetail = (fin, label) => {
+          const loserIdx = fin.winner === fin.a ? fin.b : fin.a;
+          const fs = fin.score
+            ? (fin.winner === fin.a ? `${fin.score[0]}–${fin.score[1]}` : `${fin.score[1]}–${fin.score[0]}`)
+            : "";
+          return `${label}: battuta ${esc(teamLabel(t, loserIdx))}${fs ? " " + fs : ""}`;
+        };
         if (fmt === "girone") {
           const st = gironeStandings(t);
-          winIdx = st[0].i;
           detail = st[1] ? `Girone all'italiana · secondi: ${esc(teamLabel(t, st[1].i))} (${st[1].w}V)` : "Girone all'italiana";
+        } else if (fmt === "gironefinale") {
+          detail = finaleDetail(t.bracket[1][0], "Girone + finale");
+        } else if (fmt === "doppia") {
+          detail = finaleDetail(t.bracket.gf[0], "Doppia eliminazione · finalissima");
         } else {
-          const finale = t.bracket[t.bracket.length - 1][0];
-          winIdx = finale.winner;
-          const loserIdx = finale.winner === finale.a ? finale.b : finale.a;
-          const finalScore = finale.score
-            ? (finale.winner === finale.a
-                ? `${finale.score[0]}–${finale.score[1]}`
-                : `${finale.score[1]}–${finale.score[0]}`)
-            : "";
-          detail = `Finale: battuta ${esc(teamLabel(t, loserIdx))}${finalScore ? " " + finalScore : ""}`;
+          detail = finaleDetail(t.bracket[t.bracket.length - 1][0], "Finale");
         }
         html += `<div class="info-card">
           <h3>${esc(t.name).toUpperCase()}${isAdmin() ? `<button class="del-btn" data-deltournament="${t.id}" title="Elimina" style="float:right">✕</button>` : ""}</h3>
@@ -2597,6 +3017,34 @@ function render() {
     return;
   }
 
+  // ---------- NUMERI (record di sempre) ----------
+  if (tab === "numeri") {
+    const n = state.numeri;
+    if (!n) {
+      app.innerHTML = `<div class="loading">Sto rileggendo tutte le partite di sempre…</div>`;
+      return;
+    }
+    const mLine = (m) => `${m.team_a.map(nameOf).map(esc).join(" + ")} <b>${m.score_a ?? "V"}–${m.score_b ?? "S"}</b> ${m.team_b.map(nameOf).map(esc).join(" + ")} <span class="meta">(${fmtDate(m.created_at, false)})</span>`;
+    const rows = [];
+    if (n.widest) rows.push(["🧹 Vittoria più larga", mLine(n.widest.m)]);
+    if (n.streak && n.streak.n >= 3) rows.push(["🔥 Striscia più lunga di sempre", `<b>${esc(nameOf(n.streak.id))}</b> · ${n.streak.n} vittorie di fila`]);
+    if (n.biggestSwing) rows.push(["💥 Partita che ha spostato più punti", `${mLine(n.biggestSwing.m)} · ${Math.round(n.biggestSwing.swing)} punti in ballo`]);
+    if (n.upset && n.upset.exp < 0.5) rows.push(["😱 Upset più grande", `${mLine(n.upset.m)} · vittoria data al ${Math.round(n.upset.exp * 100)}%`]);
+    if (n.rival) rows.push(["⚔️ Rivalità più giocata", `<b>${esc(nameOf(n.rival.ids[0]))}</b> vs <b>${esc(nameOf(n.rival.ids[1]))}</b> · ${n.rival.n} incroci`]);
+    if (n.mate) rows.push(["🤝 Coppia più rodata", `<b>${esc(nameOf(n.mate.ids[0]))} + ${esc(nameOf(n.mate.ids[1]))}</b> · ${n.mate.n} partite insieme`]);
+    if (n.capp) rows.push(["🍩 Re del cappotto", `<b>${esc(nameOf(n.capp.id))}</b> · ${n.capp.n} cappotti rifilati`]);
+    if (n.day) rows.push(["📅 Giorno più intenso", `${new Date(n.day.day).toLocaleDateString("it-IT", { day: "numeric", month: "long", year: "numeric" })} · ${n.day.n} partite`]);
+    app.innerHTML = `
+      <div class="info-card">
+        <h3>I NUMERI DI SEMPRE</h3>
+        <p class="meta">${n.tot} partite giocate · ${n.totGol} gol segnati. Record calcolati su tutto lo storico, tutte le stagioni.</p>
+        <button class="close-btn" data-numerireload="1">↻ Aggiorna</button>
+      </div>
+      ${rows.map(([h, b]) => `<div class="info-card"><h3>${h}</h3><p style="font-size:14px;line-height:1.5">${b}</p></div>`).join("")}
+      ${rows.length ? "" : `<div class="empty">Ancora poche partite per i record.</div>`}`;
+    return;
+  }
+
   // ---------- GIOCATORI ----------
   if (tab === "rosa") {
     const rows = [...players].sort(byName).map((p) => {
@@ -2705,10 +3153,12 @@ document.addEventListener("click", async (e) => {
     state.tab = t.dataset.tab;
     state.profileId = null;
     state.editMatch = null;
+    state.historyLimit = 50;
     setLoading(true);
     await loadAll();
     setLoading(false);
     render();
+    if (state.tab === "numeri" && !state.numeri) loadNumeri();
     return;
   }
   if (t.id === "profile-back") {
@@ -2751,13 +3201,69 @@ document.addEventListener("click", async (e) => {
   }
   if (t.dataset.tsignup) {
     state.tSignup = t.dataset.tsignup === "1";
+    if (state.tSignup) state.tAuto = false;
+    render();
+    return;
+  }
+  if (t.dataset.tauto) {
+    state.tAuto = t.dataset.tauto === "1";
+    if (state.tAuto) state.tSignup = false;
+    render();
+    return;
+  }
+  if (t.dataset.tautosel) {
+    const id = t.dataset.tautosel;
+    const k = state.tAutoIds.indexOf(id);
+    if (k >= 0) state.tAutoIds.splice(k, 1);
+    else state.tAutoIds.push(id);
     render();
     return;
   }
   if (t.dataset.histseason) {
     state.historySeason = t.dataset.histseason;
+    state.historyLimit = 50;
     render();
     return;
+  }
+  if (t.dataset.histmore) {
+    state.historyLimit += 50;
+    render();
+    return;
+  }
+  if (t.dataset.copyrecap) {
+    const { text } = buildDayRecap();
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => toast("Riepilogo copiato, incollalo nel gruppo"),
+        () => toast("Copia non riuscita", false));
+    } else {
+      toast("Copia non supportata su questo browser", false);
+    }
+    return;
+  }
+  if (t.dataset.numerireload) {
+    state.numeri = null;
+    render();
+    loadNumeri();
+    return;
+  }
+  if (t.dataset.newchallenge) {
+    const from = document.getElementById("ch-from")?.value;
+    const to = document.getElementById("ch-to")?.value;
+    if (!from || !to || from === to) { toast("Scegli due giocatori diversi", false); return; }
+    return withBusy(async () => {
+      const { error } = await sb.from("challenges").insert({ from_id: from, to_id: to });
+      if (error) { toast("Errore nel lancio della sfida", false); return; }
+      toast("Sfida lanciata!");
+    });
+  }
+  if (t.dataset.delchallenge) {
+    if (!confirm("Eliminare questa sfida?")) return;
+    return withBusy(async () => {
+      const { error } = await sb.from("challenges").delete().eq("id", t.dataset.delchallenge);
+      if (error) toast("Errore nell'eliminazione", false);
+      else toast("Sfida eliminata");
+    });
   }
   if (t.dataset.mode) {
     state.mode = t.dataset.mode;
@@ -2970,11 +3476,11 @@ document.addEventListener("click", async (e) => {
     return withBusy(() => deleteTournament(tor.id));
   }
   if (t.dataset.trecord) {
-    const [tid, r, i] = t.dataset.trecord.split("|");
-    const sa = parseInt(document.getElementById(`ts-${tid}-${r}-${i}-a`)?.value, 10);
-    const sbv = parseInt(document.getElementById(`ts-${tid}-${r}-${i}-b`)?.value, 10);
+    const [tid, sec, r, i] = t.dataset.trecord.split("|");
+    const sa = parseInt(document.getElementById(`ts-${tid}-${sec}-${r}-${i}-a`)?.value, 10);
+    const sbv = parseInt(document.getElementById(`ts-${tid}-${sec}-${r}-${i}-b`)?.value, 10);
     if (Number.isNaN(sa) || Number.isNaN(sbv)) { toast("Inserisci entrambi i punteggi", false); return; }
-    return withBusy(() => recordTournamentMatch(tid, Number(r), Number(i), sa, sbv));
+    return withBusy(() => recordTournamentMatch(tid, sec, Number(r), Number(i), sa, sbv));
   }
   if (t.dataset.rename) {
     const p = byId(t.dataset.rename);
@@ -3043,6 +3549,12 @@ document.addEventListener("change", (e) => {
     const em = state.editMatch;
     if (!em) return;
     em[t.dataset.editteam][Number(t.dataset.editslot)] = t.value;
+    render();
+    return;
+  }
+  if (t.dataset.histplayer) {
+    state.historyPlayer = t.value;
+    state.historyLimit = 50;
     render();
     return;
   }
