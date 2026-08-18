@@ -732,6 +732,7 @@ const state = {
   historyPlayer: "all",
   historyLimit: 50,
   challenges: [],
+  ch2: false, // sfida 2v2 invece che 1v1
   challengesOk: true,
   numeri: null, // record di sempre, calcolati on demand
   tAuto: false,
@@ -1794,13 +1795,22 @@ async function downloadBackup() {
 // ---------- Sfide dirette ----------
 // Lo stato "saldata" non e' salvato: una sfida risulta saldata se, dopo il
 // lancio, esiste una partita confermata coi due su sponde opposte.
+// una sfida puo' essere 1v1 (from_id vs to_id) o 2v2 (from_id+from2_id vs to_id+to2_id)
+function challengeSides(c) {
+  return {
+    from: [c.from_id, c.from2_id].filter(Boolean),
+    to: [c.to_id, c.to2_id].filter(Boolean),
+  };
+}
+
 function challengeStatus(c) {
   const t0 = new Date(c.created_at);
+  const { from, to } = challengeSides(c);
   for (const m of state.matches) {
     if (new Date(m.confirmed_at ?? m.created_at) <= t0) continue;
-    const fromA = m.team_a.includes(c.from_id), fromB = m.team_b.includes(c.from_id);
-    const toA = m.team_a.includes(c.to_id), toB = m.team_b.includes(c.to_id);
-    if ((fromA && toB) || (fromB && toA)) return { done: true, m };
+    const inA = (ids) => ids.every((id) => m.team_a.includes(id));
+    const inB = (ids) => ids.every((id) => m.team_b.includes(id));
+    if ((inA(from) && inB(to)) || (inB(from) && inA(to))) return { done: true, m };
   }
   return { done: false, m: null };
 }
@@ -1934,23 +1944,19 @@ async function loadNumeri() {
 }
 
 function computeNumeri(all) {
-  let totGol = 0, widest = null, biggestSwing = null, upset = null;
-  const streakCur = {}, streakBest = {}, rival = {}, matesN = {}, byDay = {}, capp = {};
+  let totGol = 0, cappTot = 0;
+  const streakCur = {}, streakBest = {}, rival = {}, byDay = {};
+  const capp = {}, cappSub = {}, pg = {}, pairs = {};
   for (const m of all) {
+    const winners = m.winners ?? [];
     if (m.score_a != null) {
       totGol += m.score_a + m.score_b;
-      const diff = Math.abs(m.score_a - m.score_b);
-      if (!widest || diff > widest.diff) widest = { diff, m };
-      if (Math.min(m.score_a, m.score_b) === 0 && Math.max(m.score_a, m.score_b) >= 8)
-        for (const id of m.winners ?? []) capp[id] = (capp[id] ?? 0) + 1;
-    }
-    const swing = Object.values(m.deltas ?? {}).filter((d) => d > 0).reduce((s, d) => s + d, 0);
-    if (!biggestSwing || swing > biggestSwing.swing) biggestSwing = { swing, m };
-    if (m.pre) {
-      const avg = (ids) => ids.reduce((s, id) => s + (m.pre[id] ?? 1000), 0) / ids.length;
-      const aWon = (m.winners ?? []).includes(m.team_a[0]);
-      const exp = expectedScore(avg(aWon ? m.team_a : m.team_b), avg(aWon ? m.team_b : m.team_a));
-      if (!upset || exp < upset.exp) upset = { exp, m };
+      if (Math.min(m.score_a, m.score_b) === 0 && Math.max(m.score_a, m.score_b) >= 8) {
+        cappTot++;
+        for (const id of winners) capp[id] = (capp[id] ?? 0) + 1;
+        for (const id of [...m.team_a, ...m.team_b])
+          if (!winners.includes(id)) cappSub[id] = (cappSub[id] ?? 0) + 1;
+      }
     }
     const day = new Date(m.created_at).toDateString();
     byDay[day] = (byDay[day] ?? 0) + 1;
@@ -1960,10 +1966,14 @@ function computeNumeri(all) {
     }
     for (const team of [m.team_a, m.team_b]) if (team.length === 2) {
       const k = pairKey(team[0], team[1]);
-      matesN[k] = (matesN[k] ?? 0) + 1;
+      (pairs[k] ??= { ids: [...team], w: 0, l: 0 });
+      winners.includes(team[0]) ? pairs[k].w++ : pairs[k].l++;
     }
     for (const id of [...m.team_a, ...m.team_b]) {
-      if ((m.winners ?? []).includes(id)) {
+      (pg[id] ??= { g: 0, w: 0 });
+      pg[id].g++;
+      if (winners.includes(id)) {
+        pg[id].w++;
         streakCur[id] = (streakCur[id] ?? 0) + 1;
         streakBest[id] = Math.max(streakBest[id] ?? 0, streakCur[id]);
       } else streakCur[id] = 0;
@@ -1974,14 +1984,32 @@ function computeNumeri(all) {
     for (const k of Object.keys(obj)) if (!b || obj[k] > obj[b]) b = k;
     return b;
   };
-  const st = topOf(streakBest), rv = topOf(rival), mt = topOf(matesN), dy = topOf(byDay), cp = topOf(capp);
+  const st = topOf(streakBest), rv = topOf(rival), dy = topOf(byDay);
+  // coppia piu' rodata (piu' partite insieme, di sempre)
+  let mate = null;
+  for (const p of Object.values(pairs)) {
+    const n = p.w + p.l;
+    if (!mate || n > mate.n) mate = { ids: p.ids, n };
+  }
+  // migliori coppie di sempre (winrate, minimo 3 partite insieme)
+  const pairsBest = Object.values(pairs).filter((p) => p.w + p.l >= 3)
+    .sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l) || b.w - a.w)
+    .slice(0, 5);
+  // winrate carriera piu' alto tra chi ha almeno 100 partite
+  let wrBest = null;
+  for (const [id, s] of Object.entries(pg)) {
+    if (s.g < 100) continue;
+    const pct = s.w / s.g;
+    if (!wrBest || pct > wrBest.pct) wrBest = { id, g: s.g, w: s.w, pct };
+  }
   return {
-    tot: all.length, totGol, widest, biggestSwing, upset,
+    tot: all.length, totGol, cappTot, capp, cappSub,
     streak: st ? { id: st, n: streakBest[st] } : null,
     rival: rv ? { ids: rv.split("|"), n: rival[rv] } : null,
-    mate: mt ? { ids: mt.split("|"), n: matesN[mt] } : null,
+    mate,
     day: dy ? { day: dy, n: byDay[dy] } : null,
-    capp: cp ? { id: cp, n: capp[cp] } : null,
+    pairsBest,
+    wrBest,
   };
 }
 
@@ -2335,7 +2363,7 @@ function render() {
           ? `Iscrizioni aperte per "${esc(signupTs[0].name)}"`
           : `${signupTs.length} tornei con iscrizioni aperte`} · tocca per iscriverti</div>`
       : "";
-    let out = signupNote + buildDayRecap().html + ranked.map((p, i) => rowHTML(p, i, null)).join("");
+    let out = signupNote + ranked.map((p, i) => rowHTML(p, i, null)).join("");
     out += volataHTML(ranked);
     if (!ranked.length)
       out += `<div class="empty">Nessuno si è ancora qualificato: servono ${QUAL.games} partite, ${QUAL.opps} avversari e ${QUAL.mates} compagni diversi.</div>`;
@@ -2347,33 +2375,6 @@ function render() {
 
     out += seasonChartHTML(ranked);
 
-    // migliori coppie della stagione (minimo 3 partite insieme)
-    const pairStats = {};
-    for (const m of matches) {
-      if (season && m.season_id !== season.id) continue;
-      for (const team of [m.team_a, m.team_b]) {
-        if (team.length !== 2) continue;
-        const k = pairKey(team[0], team[1]);
-        (pairStats[k] ??= { ids: [...team], w: 0, l: 0 });
-        m.winners.includes(team[0]) ? pairStats[k].w++ : pairStats[k].l++;
-      }
-    }
-    const topPairs = Object.values(pairStats).filter((p) => p.w + p.l >= 3)
-      .sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l) || b.w - a.w)
-      .slice(0, 5);
-    if (topPairs.length) {
-      out += `<div class="section-label" style="margin-top:18px">MIGLIORI COPPIE</div>`;
-      out += topPairs.map((p, i) => {
-        const pct = Math.round((p.w / (p.w + p.l)) * 100);
-        return `<div class="row">
-          <div class="rank" style="font-size:16px">${i + 1}</div>
-          <div style="flex:1">
-            <div class="player-name" style="font-size:14px">${p.ids.map((id) => esc(nameOf(id))).join(" + ")}</div>
-            <div class="meta">${p.w}V–${p.l}S · ${pct}%</div>
-          </div>
-        </div>`;
-      }).join("");
-    }
     app.innerHTML = out;
     return;
   }
@@ -2519,32 +2520,51 @@ function render() {
     if (state.challengesOk) {
       const openCh = [], settledCh = [];
       for (const c of state.challenges) {
-        if (!byId(c.from_id) || !byId(c.to_id)) continue;
+        const sides = challengeSides(c);
+        if ([...sides.from, ...sides.to].some((id) => !byId(id))) continue;
         const st = challengeStatus(c);
         (st.done ? settledCh : openCh).push({ c, st });
       }
       const chOpts = `<option value="">— giocatore —</option>` + [...players].sort(byName).map((p) =>
         `<option value="${p.id}">${esc(p.name)}</option>`).join("");
       const chRow = ({ c, st }) => {
+        const sides = challengeSides(c);
         const del = isAdmin() ? `<button class="del-btn" data-delchallenge="${c.id}">✕</button>` : "";
         const res = st.done && st.m
           ? `<div class="meta">saldata: ${st.m.team_a.map(nameOf).map(esc).join("+")} ${st.m.score_a ?? "V"}–${st.m.score_b ?? "S"} ${st.m.team_b.map(nameOf).map(esc).join("+")}</div>`
-          : `<div class="meta">lanciata il ${fmtDate(c.created_at, false)} · si salda alla prima partita coi due su sponde opposte</div>`;
+          : `<div class="meta">lanciata il ${fmtDate(c.created_at, false)} · si salda alla prima partita con le due sponde al completo, una contro l'altra</div>`;
+        const verbo = sides.from.length > 1 ? "sfidano" : "sfida";
         return `<div class="row" style="${st.done ? "opacity:0.6" : ""}">
           <div style="flex:1">
-            <div class="player-name" style="font-size:14px">${st.done ? "✅" : "🗡"} ${esc(nameOf(c.from_id))} sfida ${esc(nameOf(c.to_id))}</div>
+            <div class="player-name" style="font-size:14px">${st.done ? "✅" : "🗡"} ${sides.from.map(nameOf).map(esc).join(" + ")} ${verbo} ${sides.to.map(nameOf).map(esc).join(" + ")}</div>
             ${res}
           </div>
           ${del}
         </div>`;
       };
+      const chForm = state.ch2
+        ? `<div class="pair-row">
+            <select id="ch-from">${chOpts}</select>
+            <select id="ch-from2">${chOpts}</select>
+          </div>
+          <div class="meta" style="text-align:center;margin:2px 0">sfidano</div>
+          <div class="pair-row">
+            <select id="ch-to">${chOpts}</select>
+            <select id="ch-to2">${chOpts}</select>
+            <button class="use-btn" data-newchallenge="1">Lancia</button>
+          </div>`
+        : `<div class="pair-row">
+            <select id="ch-from">${chOpts}</select>
+            <select id="ch-to">${chOpts}</select>
+            <button class="use-btn" data-newchallenge="1">Lancia</button>
+          </div>`;
       sfideHTML = `<div class="section-label" style="margin-top:26px">SFIDE DIRETTE</div>
-        <div class="meta" style="margin-bottom:8px">Lancia una sfida: resta in sospeso finché i due non giocano su sponde opposte, in singolo o in coppia. Un conto aperto, sotto gli occhi di tutti.</div>
-        <div class="pair-row">
-          <select id="ch-from">${chOpts}</select>
-          <select id="ch-to">${chOpts}</select>
-          <button class="use-btn" data-newchallenge="1">Lancia</button>
+        <div class="meta" style="margin-bottom:8px">Lancia una sfida, in singolo o tra coppie fisse: resta in sospeso finché le due sponde non si affrontano al completo. Un conto aperto, sotto gli occhi di tutti.</div>
+        <div class="mode-row">
+          <button data-ch2="0" class="${!state.ch2 ? "active" : ""}" style="font-size:12px">1 vs 1</button>
+          <button data-ch2="1" class="${state.ch2 ? "active" : ""}" style="font-size:12px">2 vs 2</button>
         </div>
+        ${chForm}
         ${openCh.map(chRow).join("") || `<div class="meta" style="margin-bottom:6px">Nessuna sfida in sospeso.</div>`}
         ${settledCh.length ? `<div class="meta" style="margin:8px 0 4px;letter-spacing:0.1em">SALDATE DI RECENTE</div>` + settledCh.slice(0, 5).map(chRow).join("") : ""}`;
     }
@@ -3019,29 +3039,67 @@ function render() {
 
   // ---------- NUMERI (record di sempre) ----------
   if (tab === "numeri") {
+    const recap = buildDayRecap().html;
     const n = state.numeri;
     if (!n) {
-      app.innerHTML = `<div class="loading">Sto rileggendo tutte le partite di sempre…</div>`;
+      app.innerHTML = `${recap}<div class="loading">Sto rileggendo tutte le partite di sempre…</div>`;
       return;
     }
-    const mLine = (m) => `${m.team_a.map(nameOf).map(esc).join(" + ")} <b>${m.score_a ?? "V"}–${m.score_b ?? "S"}</b> ${m.team_b.map(nameOf).map(esc).join(" + ")} <span class="meta">(${fmtDate(m.created_at, false)})</span>`;
     const rows = [];
-    if (n.widest) rows.push(["🧹 Vittoria più larga", mLine(n.widest.m)]);
+    // tutti i cappotti: totale + chi li rifila e chi li subisce
+    if (n.cappTot > 0) {
+      const topList = (obj, verbo) => Object.entries(obj)
+        .sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([id, c]) => `${esc(nameOf(id))} (${c})`).join(", ");
+      const rifilati = topList(n.capp);
+      const subiti = topList(n.cappSub);
+      rows.push(["🧹 Tutti i cappotti", `<b>${n.cappTot}</b> cappotti di sempre.${rifilati ? `<br>Rifilati: ${rifilati}` : ""}${subiti ? `<br>Subiti: ${subiti}` : ""}`]);
+    }
     if (n.streak && n.streak.n >= 3) rows.push(["🔥 Striscia più lunga di sempre", `<b>${esc(nameOf(n.streak.id))}</b> · ${n.streak.n} vittorie di fila`]);
-    if (n.biggestSwing) rows.push(["💥 Partita che ha spostato più punti", `${mLine(n.biggestSwing.m)} · ${Math.round(n.biggestSwing.swing)} punti in ballo`]);
-    if (n.upset && n.upset.exp < 0.5) rows.push(["😱 Upset più grande", `${mLine(n.upset.m)} · vittoria data al ${Math.round(n.upset.exp * 100)}%`]);
+    // tornei vinti (da state.tournaments, tutti i formati)
+    const tWins = {};
+    for (const t of state.tournaments) {
+      if (t.status !== "done") continue;
+      const winIdx = tournamentWinnerIdx(t);
+      const team = winIdx == null ? null : t.teams[winIdx];
+      if (!team) continue;
+      for (const id of [team.p1, team.p2]) if (byId(id)) tWins[id] = (tWins[id] ?? 0) + 1;
+    }
+    const tMax = Math.max(0, ...Object.values(tWins));
+    if (tMax > 0) {
+      const kings = Object.entries(tWins).filter(([, c]) => c === tMax)
+        .map(([id]) => esc(nameOf(id))).join(", ");
+      rows.push(["🏆 Più tornei vinti", `<b>${kings}</b> · ${tMax} ${tMax === 1 ? "torneo" : "tornei"}`]);
+    }
+    if (n.wrBest) rows.push(["📈 Winrate più alto (100+ partite)", `<b>${esc(nameOf(n.wrBest.id))}</b> · ${Math.round(n.wrBest.pct * 100)}% (${n.wrBest.w}V–${n.wrBest.g - n.wrBest.w}S)`]);
     if (n.rival) rows.push(["⚔️ Rivalità più giocata", `<b>${esc(nameOf(n.rival.ids[0]))}</b> vs <b>${esc(nameOf(n.rival.ids[1]))}</b> · ${n.rival.n} incroci`]);
     if (n.mate) rows.push(["🤝 Coppia più rodata", `<b>${esc(nameOf(n.mate.ids[0]))} + ${esc(nameOf(n.mate.ids[1]))}</b> · ${n.mate.n} partite insieme`]);
-    if (n.capp) rows.push(["🍩 Re del cappotto", `<b>${esc(nameOf(n.capp.id))}</b> · ${n.capp.n} cappotti rifilati`]);
     if (n.day) rows.push(["📅 Giorno più intenso", `${new Date(n.day.day).toLocaleDateString("it-IT", { day: "numeric", month: "long", year: "numeric" })} · ${n.day.n} partite`]);
+    // migliori coppie di sempre (winrate, min 3 insieme)
+    let pairsHTML = "";
+    if (n.pairsBest?.length) {
+      pairsHTML = `<div class="section-label" style="margin-top:18px">MIGLIORI COPPIE</div>`;
+      pairsHTML += n.pairsBest.map((p, i) => {
+        const pct = Math.round((p.w / (p.w + p.l)) * 100);
+        return `<div class="row">
+          <div class="rank" style="font-size:16px">${i + 1}</div>
+          <div style="flex:1">
+            <div class="player-name" style="font-size:14px">${p.ids.map((id) => esc(nameOf(id))).join(" + ")}</div>
+            <div class="meta">${p.w}V–${p.l}S · ${pct}%</div>
+          </div>
+        </div>`;
+      }).join("");
+    }
     app.innerHTML = `
+      ${recap}
       <div class="info-card">
         <h3>I NUMERI DI SEMPRE</h3>
         <p class="meta">${n.tot} partite giocate · ${n.totGol} gol segnati. Record calcolati su tutto lo storico, tutte le stagioni.</p>
         <button class="close-btn" data-numerireload="1">↻ Aggiorna</button>
       </div>
       ${rows.map(([h, b]) => `<div class="info-card"><h3>${h}</h3><p style="font-size:14px;line-height:1.5">${b}</p></div>`).join("")}
-      ${rows.length ? "" : `<div class="empty">Ancora poche partite per i record.</div>`}`;
+      ${pairsHTML}
+      ${rows.length || pairsHTML ? "" : `<div class="empty">Ancora poche partite per i record.</div>`}`;
     return;
   }
 
@@ -3247,13 +3305,23 @@ document.addEventListener("click", async (e) => {
     loadNumeri();
     return;
   }
+  if (t.dataset.ch2 != null) {
+    state.ch2 = t.dataset.ch2 === "1";
+    render();
+    return;
+  }
   if (t.dataset.newchallenge) {
-    const from = document.getElementById("ch-from")?.value;
-    const to = document.getElementById("ch-to")?.value;
-    if (!from || !to || from === to) { toast("Scegli due giocatori diversi", false); return; }
+    const val = (id) => document.getElementById(id)?.value || null;
+    const row = state.ch2
+      ? { from_id: val("ch-from"), from2_id: val("ch-from2"), to_id: val("ch-to"), to2_id: val("ch-to2") }
+      : { from_id: val("ch-from"), to_id: val("ch-to") };
+    const ids = Object.values(row).filter(Boolean);
+    const richiesti = state.ch2 ? 4 : 2;
+    if (ids.length < richiesti) { toast("Completa tutte le sponde della sfida", false); return; }
+    if (new Set(ids).size !== ids.length) { toast("Un giocatore è su entrambe le sponde o ripetuto", false); return; }
     return withBusy(async () => {
-      const { error } = await sb.from("challenges").insert({ from_id: from, to_id: to });
-      if (error) { toast("Errore nel lancio della sfida", false); return; }
+      const { error } = await sb.from("challenges").insert(row);
+      if (error) { toast("Errore nel lancio della sfida (hai eseguito supabase-sfide.sql aggiornato?)", false); return; }
       toast("Sfida lanciata!");
     });
   }
