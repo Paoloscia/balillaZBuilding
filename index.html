@@ -196,18 +196,23 @@
     background: var(--cream); color: #1c1c1c;
     font-size: 14px;
   }
-  .score-ctrl { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 4px; }
-  .score-ctrl button {
-    width: 36px; height: 36px;
-    border-radius: 50%;
+  .score-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 5px;
+    margin-top: 4px;
+  }
+  .score-grid button {
+    padding: 9px 0;
+    border-radius: 7px;
     border: 1px solid var(--line);
     background: rgba(255,255,255,0.08);
     color: var(--cream);
-    font-size: 20px; cursor: pointer; line-height: 1;
+    font-family: var(--font-display);
+    font-size: 15px; cursor: pointer; line-height: 1;
   }
-  .score-num { font-family: var(--font-display); font-size: 34px; min-width: 44px; text-align: center; }
-  .team-card.red .score-num { color: var(--red-light); }
-  .team-card.blue .score-num { color: var(--blue-light); }
+  .team-card.red .score-grid button.sel { background: var(--red); border-color: var(--red); color: #fff; }
+  .team-card.blue .score-grid button.sel { background: var(--blue); border-color: var(--blue); color: #fff; }
   .win-btn {
     margin-top: 4px;
     padding: 12px 0;
@@ -278,6 +283,7 @@
   .cta-boost { box-shadow: 0 0 16px rgba(232,179,65,0.6); }
   .match-row .team-a { color: var(--red-light); font-weight: 700; }
   .match-row .team-b { color: var(--blue-light); font-weight: 700; }
+  .match-row .loser { opacity: 0.55; }
   .match-score { font-family: var(--font-display); font-size: 20px; white-space: nowrap; }
   .match-score .win { color: var(--gold); }
   .confirm-actions { display: flex; gap: 6px; margin-top: 8px; }
@@ -740,17 +746,35 @@ async function loadAll() {
     sb.from("player_requests").select("*").order("created_at", { ascending: true }),
     sb.from("player_totals").select("*"),
   ]);
-  if (pRes.error || sRes.error || rRes.error || mRes.error || pendRes.error || tRes.error || reqRes.error || totRes.error) {
-    toast("Errore di connessione: controlla configurazione e script SQL", false);
-    return;
+  // Tabelle indispensabili: senza queste l'app non funziona.
+  const core = { players: pRes, seasons: sRes, season_results: rRes, matches: mRes, pending: pendRes, tournaments: tRes };
+  const broken = Object.entries(core).filter(([, r]) => r.error);
+  if (broken.length) {
+    const msg = broken.map(([name, r]) => `${name}: ${r.error.message}`).join(" · ");
+    document.getElementById("app").innerHTML =
+      `<div class="empty">Errore nel caricamento dei dati.<br><br><span style="font-style:normal;font-size:12px;opacity:0.8">${esc(msg)}</span></div>`;
+    throw new Error("loadAll: " + msg);
   }
   state.players = pRes.data;
   state.seasons = sRes.data;
   state.matches = mRes.data;
   state.pending = pendRes.data;
   state.tournaments = tRes.data;
-  state.requests = reqRes.data;
-  state.totals = Object.fromEntries(totRes.data.map((r) => [r.player_id, r]));
+
+  // Tabelle aggiunte dopo: se mancano l'app funziona lo stesso, ma avvisa
+  // quale script SQL va eseguito.
+  if (reqRes.error) {
+    state.requests = [];
+    toast("Manca la tabella player_requests: esegui supabase-richieste-giocatori.sql", false);
+  } else {
+    state.requests = reqRes.data;
+  }
+  if (totRes.error) {
+    state.totals = {};
+    toast("Manca la vista player_totals: esegui supabase-totali.sql", false);
+  } else {
+    state.totals = Object.fromEntries(totRes.data.map((r) => [r.player_id, r]));
+  }
 
   state.results = {};
   for (const r of rRes.data) (state.results[r.season_id] ??= []).push(r);
@@ -1625,9 +1649,9 @@ function matchRowHTML(m, { pending = false, actions = false, showSeason = false 
   const seasonTag = showSeason ? ` · ${esc(seasonName(m.season_id))}` : "";
   return `<div class="match-row ${pending ? "pending" : ""}${bVal > 1 ? " boosted" : ""}">
     <div style="flex:1">
-      <span class="team-a">${m.team_a.map((id) => esc(nameOf(id))).join(" + ")}</span>
+      <span class="team-a ${aWon ? "" : "loser"}">${aWon ? "\u{1F3C6} " : ""}${m.team_a.map((id) => esc(nameOf(id))).join(" + ")}</span>
       <span style="opacity:0.7"> vs </span>
-      <span class="team-b">${m.team_b.map((id) => esc(nameOf(id))).join(" + ")}</span>
+      <span class="team-b ${aWon ? "loser" : ""}">${aWon ? "" : "\u{1F3C6} "}${m.team_b.map((id) => esc(nameOf(id))).join(" + ")}</span>
       <div class="meta">${fmtDate(m.created_at)} · ${m.mode}${noScore ? " · senza punteggio" : ""}${bVal > 1 ? ` · <span style="color:var(--gold);font-weight:700">⭐ ×${bVal}</span>` : ""}${seasonTag}</div>
       <div class="meta">${deltaStr}</div>
       ${btns}
@@ -1914,10 +1938,9 @@ function render() {
         ? `<button class="win-btn ${state.winnerSide === side ? "active" : ""}" data-winner="${side}">
             ${state.winnerSide === side ? "🏆 VITTORIA" : "Vittoria"}
           </button>`
-        : `<div class="score-ctrl">
-            <button data-score="${side}" data-dir="-1">−</button>
-            <div class="score-num">${score}</div>
-            <button data-score="${side}" data-dir="1">+</button>
+        : `<div class="score-grid">
+            ${Array.from({ length: 11 }, (_, n) =>
+              `<button data-score="${side}" data-val="${n}" class="${score === n ? "sel" : ""}">${n}</button>`).join("")}
           </div>`;
       return `<div class="team-card ${cls}">
         <div class="team-label">${label}</div>
@@ -2614,7 +2637,7 @@ document.addEventListener("click", async (e) => {
   }
   if (t.dataset.score) {
     const key = t.dataset.score === "A" ? "scoreA" : "scoreB";
-    state[key] = Math.max(0, state[key] + Number(t.dataset.dir));
+    state[key] = Number(t.dataset.val);
     render();
     return;
   }
