@@ -1401,16 +1401,22 @@ function repetitionFactor(idsA, idsB, refDate) {
 }
 
 function scorePairing(A, B, maps, opts = {}) {
-  const { requireNew = true, balanceWeight = 0.1, activityWeight = 1, ignoreRoles = false } = opts;
+  const { requireNew = true, balanceWeight = 0.1, activityWeight = 1 } = opts;
   const { games, faced, teamed, rank } = maps;
-  if (!ignoreRoles) {
-    const doubleAttack = (T) => roleOf(T[0]) === "attaccante" && roleOf(T[1]) === "attaccante";
-    if (doubleAttack(A) || doubleAttack(B)) return null;
-  }
-  const compl = [A, B].filter((T) => {
+  // Sinergia di ruoli: SOLO un rompi-pareggi, mai un vincolo. Nessuna
+  // coppia e' vietata o penalizzata: due attaccanti e due difensori
+  // valgono uguale. A parita' di tutto il resto si preferiscono le coppie
+  // che si incastrano, con un filo di vantaggio per l'ibrido che si
+  // adatta a chiunque (dichiararsi ibrido non deve mai essere un malus).
+  const synergy = (T) => {
     const r = T.map(roleOf);
-    return r.includes("attaccante") && r.includes("difensore");
-  }).length;
+    const ib = r.filter((x) => x === "ibrido").length;
+    if (ib === 2) return 3;    // due ibridi
+    if (ib === 1) return 2.5;  // ibrido + specialista
+    if (r.includes("attaccante") && r.includes("difensore")) return 2; // coppia classica
+    return 0; // due attaccanti o due difensori: legittimi, stesso peso, nessun malus
+  };
+  const compl = synergy(A) + synergy(B);
   const cross = [[A[0], B[0]], [A[0], B[1]], [A[1], B[0]], [A[1], B[1]]];
   const newFaced = cross.filter(([x, y]) => !faced[pairKey(x.id, y.id)]).length;
   // rompi-pareggi: sfide mai giocate tra ELO vicini valgono di piu',
@@ -1433,7 +1439,7 @@ function scorePairing(A, B, maps, opts = {}) {
   const r2 = (a, b) => (a.elo + b.elo) / 2 - HANDICAP * Math.abs(a.elo - b.elo);
   const gap = Math.abs(r2(A[0], A[1]) - r2(B[0], B[1]));
   const score =
-    newFaced * 30 + newTeams * 20 + compl * 8
+    newFaced * 30 + newTeams * 20 + compl
     + tieBreak
     - Math.min(habit, 10) * 6
     + Math.min(activity, 40) * activityWeight
@@ -1442,30 +1448,24 @@ function scorePairing(A, B, maps, opts = {}) {
 }
 
 // Le due coppie migliori tra i presenti: equilibrio prima di tutto,
-// precedenza a chi ha giocato meno, ruoli rispettati quando possibile.
+// precedenza a chi ha giocato meno, ruoli usati solo come rompi-pareggi.
 function bestLineup(ids) {
   const ps = ids.map(byId).filter(Boolean);
   if (ps.length < 4) return null;
   const maps = historyMaps();
-  const evalAll = (ignoreRoles) => {
-    let best = null;
-    for (let i = 0; i < ps.length; i++)
-      for (let j = i + 1; j < ps.length; j++)
-        for (let k = j + 1; k < ps.length; k++)
-          for (let l = k + 1; l < ps.length; l++) {
-            const q = [ps[i], ps[j], ps[k], ps[l]];
-            for (const [[a1, a2], [b1, b2]] of PAIRINGS) {
-              const c = scorePairing([q[a1], q[a2]], [q[b1], q[b2]], maps,
-                { requireNew: false, balanceWeight: 0.6, activityWeight: -0.6, ignoreRoles });
-              if (c && (!best || c.score > best.score)) best = c;
-            }
+  let best = null;
+  for (let i = 0; i < ps.length; i++)
+    for (let j = i + 1; j < ps.length; j++)
+      for (let k = j + 1; k < ps.length; k++)
+        for (let l = k + 1; l < ps.length; l++) {
+          const q = [ps[i], ps[j], ps[k], ps[l]];
+          for (const [[a1, a2], [b1, b2]] of PAIRINGS) {
+            const c = scorePairing([q[a1], q[a2]], [q[b1], q[b2]], maps,
+              { requireNew: false, balanceWeight: 0.6, activityWeight: -0.6 });
+            if (c && (!best || c.score > best.score)) best = c;
           }
-    return best;
-  };
-  let best = evalAll(false);
-  let ignoredRoles = false;
-  if (!best) { best = evalAll(true); ignoredRoles = true; }
-  return best ? { ...best, ignoredRoles } : null;
+        }
+  return best;
 }
 
 // Requisiti per comparire in classifica (stagione corrente).
@@ -2158,7 +2158,7 @@ function render() {
           <div style="flex:1">
             ${label ? `<div class="meta" style="margin-bottom:2px;letter-spacing:0.1em">${label}</div>` : ""}
             <div class="player-name" style="font-size:14px">${esc(best.A[0].name)} + ${esc(best.A[1].name)} <span style="opacity:0.6">vs</span> ${esc(best.B[0].name)} + ${esc(best.B[1].name)}</div>
-            <div class="meta">${pA}% – ${100 - pA}%${best.ignoredRoles ? " · nessuna combinazione rispetta i ruoli" : ""}${noBonusNote}${thresholdNote}</div>
+            <div class="meta">${pA}% – ${100 - pA}%${noBonusNote}${thresholdNote}</div>
             ${hasBonus ? `<div style="margin-top:4px"><span class="boost-badge">⭐ VALE ×${boost}</span></div>` : ""}
           </div>
           <button class="use-btn" data-suggest="${best.A[0].id}|${best.A[1].id}|${best.B[0].id}|${best.B[1].id}" data-boostval="${boost}">Usa</button>
@@ -2182,7 +2182,8 @@ function render() {
     const whoHTML = `<div class="section-label" style="margin-top:26px">CHI C'È OGGI</div>
       <div class="meta" style="margin-bottom:8px">Seleziona i presenti: l'app propone i tavoli migliori per equilibrio e mescolamento. Da 8 presenti, due tavoli con persone distinte.</div>
       <div style="margin-bottom:8px">${chips}</div>
-      ${lineupHTML}`;
+      ${lineupHTML}
+      <div class="meta" style="margin-top:8px">ℹ️ I ruoli non vietano nulla e non toccano l'ELO: contano solo qui, come rompi-pareggi tra tavoli quasi equivalenti. A parità di tutto il resto si preferiscono le coppie che si incastrano (attaccante+difensore), con un filo di vantaggio per gli ibridi che si adattano a chiunque. Due attaccanti o due difensori insieme valgono uguale e possono comunque essere proposti.</div>`;
 
     app.innerHTML = `
       <div class="mode-row">
@@ -2552,7 +2553,7 @@ function render() {
           <tr><td>Partita senza punteggio (solo chi ha vinto)</td><td class="neg">×0.5</td></tr>
           <tr><td>Dalla 3ª partita dello stesso giorno tra le stesse squadre</td><td class="neg">×0.5</td></tr>
         </table>
-        <p style="margin-top:8px">I <b>tavoli di "Chi c'è oggi"</b> sono le formazioni che l'app compone tra i presenti selezionati: coppie mescolate, squadre equilibrate, precedenza a chi ha giocato meno e ruoli rispettati (<b>mai due attaccanti insieme</b>, preferenza attaccante+difensore). Priorità agli <b>scontri diretti mai giocati tra chi ha un ELO vicino</b>: sono le partite che rompono i pareggi in classifica, con un occhio di riguardo per il vertice ma senza dimenticare il fondo.</p>
+        <p style="margin-top:8px">I <b>tavoli di "Chi c'è oggi"</b> sono le formazioni che l'app compone tra i presenti selezionati: coppie mescolate, squadre equilibrate, precedenza a chi ha giocato meno e ruoli usati <b>solo come rompi-pareggi</b>: a parità di tutto il resto si preferiscono le coppie che si incastrano, con un filo di vantaggio per l'ibrido che si adatta a chiunque. <b>Nessuna coppia è vietata</b>, nemmeno due attaccanti o due difensori insieme, che valgono uguale. Priorità agli <b>scontri diretti mai giocati tra chi ha un ELO vicino</b>: sono le partite che rompono i pareggi in classifica, con un occhio di riguardo per il vertice ma senza dimenticare il fondo.</p>
         <p>I bonus ⭐ valgono solo giocando la <b>formazione esatta</b> accettata con "Usa": cambi anche un solo giocatore e il bonus decade. Da 8 presenti in su l'app propone <b>due tavoli con persone distinte</b>: il <b>Tavolo 1</b>, la partita con più senso tra i presenti, vale <b>sempre ×1.25</b>; il Tavolo 2 solo se porta incroci o coppie mai viste. Sotto gli 8 presenti, il tavolo singolo prende il bonus solo se porta qualcosa di nuovo.</p>
         <p>I fattori si <b>moltiplicano tra loro</b>: un tavolo consigliato vinto 10-0 vale 2.4 × 1.25 = <b>3 volte</b> una vittoria base, mentre la quinta rivincita della serata contro la stessa coppia, per giunta senza punteggio, vale 0.5 × 0.5 = <b>un quarto</b>. Il perché è sempre lo stesso: il sistema premia le partite che gli dicono qualcosa di nuovo e sconta quelle che ripetono informazione già nota.</p>
       </div>
