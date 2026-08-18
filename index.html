@@ -688,7 +688,7 @@ const state = {
   tSignup: false,
   profileId: null,
   profileMatches: null, // storico COMPLETO del giocatore aperto (caricato a parte)
-  editMatch: null, // { id, a: [...], b: [...] } quando un admin sta correggendo le formazioni
+  editMatch: null, // { id, a, b, noScore, sa, sb, ws } quando un admin sta correggendo una partita
   h2hId: null,
   present: [],
   suggestedList: [], // formazioni consigliate usate, col relativo bonus
@@ -994,9 +994,19 @@ async function saveMatchEdit() {
     toast("La stagione di questa partita è chiusa: non si può correggere", false);
     return;
   }
-  const noScore = m.score_a == null || m.score_b == null;
-  const aWins = noScore ? m.winner_side === "A" : m.score_a > m.score_b;
-  const patch = { team_a: a, team_b: b };
+  let sa = null, sbv = null, ws = null;
+  if (em.noScore) {
+    ws = em.ws;
+    if (ws !== "A" && ws !== "B") { toast("Scegli chi ha vinto", false); return; }
+  } else {
+    sa = parseInt(em.sa, 10);
+    sbv = parseInt(em.sb, 10);
+    if (!Number.isInteger(sa) || !Number.isInteger(sbv) || sa < 0 || sbv < 0 || sa === sbv) {
+      toast("Punteggio non valido", false); return;
+    }
+  }
+  const aWins = em.noScore ? ws === "A" : sa > sbv;
+  const patch = { team_a: a, team_b: b, score_a: sa, score_b: sbv, winner_side: ws };
   if (m.status === "confirmed") patch.winners = aWins ? a : b;
   const { error } = await sb.from("matches").update(patch).eq("id", em.id);
   if (error) { toast("Errore nel salvataggio della correzione", false); return; }
@@ -1007,6 +1017,30 @@ async function saveMatchEdit() {
     await recalcSeason();
   } else {
     toast("Formazioni aggiornate");
+  }
+}
+
+// Eliminazione di una qualsiasi partita dal pannello di modifica.
+// Pending: si cancella e basta. Confermata: si cancella e si ricalcola
+// la stagione, che riassorbe i delta della partita sparita.
+async function deleteMatchEdit() {
+  const em = state.editMatch;
+  if (!em) return;
+  const m = findMatch(em.id);
+  if (!m) { state.editMatch = null; return; }
+  if (m.status === "confirmed" && !seasonById(m.season_id)?.active) {
+    toast("La stagione di questa partita è chiusa: non si può eliminare", false);
+    return;
+  }
+  const { error } = await sb.from("matches").delete().eq("id", em.id);
+  if (error) { toast("Errore nell'eliminazione", false); return; }
+  state.editMatch = null;
+  if (m.status === "confirmed") {
+    await loadAll();
+    if (state.profileId) state.profileMatches = null;
+    await recalcSeason();
+  } else {
+    toast("Partita eliminata");
   }
 }
 
@@ -1716,13 +1750,32 @@ function matchRowHTML(m, { pending = false, actions = false, showSeason = false 
         style="width:100%;margin-top:4px;padding:7px 8px;border:none;border-radius:7px;background:var(--cream);color:#1c1c1c;font-size:13px">
         <option value="">— giocatore —</option>${opts}</select>`;
     }).join("");
+    const scoreUI = em.noScore
+      ? `<div class="confirm-actions" style="margin-top:6px">
+          <button class="${em.ws === "A" ? "btn-confirm" : "btn-reject"}" data-editwinner="A">🏆 Rossi</button>
+          <button class="${em.ws === "B" ? "btn-confirm" : "btn-reject"}" data-editwinner="B">🏆 Blu</button>
+        </div>`
+      : `<div class="b-record" style="margin-top:6px">
+          <input class="ts-input" type="number" inputmode="numeric" min="0" id="edit-sa-${m.id}" value="${em.sa}" placeholder="R">
+          <span style="opacity:0.6">–</span>
+          <input class="ts-input" type="number" inputmode="numeric" min="0" id="edit-sb-${m.id}" value="${em.sb}" placeholder="B">
+        </div>`;
     editUI = `<div style="margin-top:8px">
       <div class="meta" style="color:var(--red-light);letter-spacing:0.1em">ROSSI</div>${sel(em.a, "a")}
       <div class="meta" style="margin-top:6px;color:var(--blue-light);letter-spacing:0.1em">BLU</div>${sel(em.b, "b")}
-      ${m.status === "confirmed" ? `<div class="meta" style="margin-top:6px">Salvando, tutta la stagione verrà ricalcolata partita per partita.</div>` : ""}
+      <div class="meta" style="margin-top:8px;letter-spacing:0.1em">RISULTATO</div>
+      <div class="confirm-actions" style="margin-top:4px">
+        <button class="${!em.noScore ? "btn-confirm" : "btn-reject"}" data-editscoremode="score">Con punteggio</button>
+        <button class="${em.noScore ? "btn-confirm" : "btn-reject"}" data-editscoremode="noscore">Solo vincitore</button>
+      </div>
+      ${scoreUI}
+      ${m.status === "confirmed" ? `<div class="meta" style="margin-top:6px">Salvando o eliminando, tutta la stagione verrà ricalcolata partita per partita.</div>` : ""}
       <div class="confirm-actions">
         <button class="btn-confirm" data-saveedit="${m.id}">${m.status === "confirmed" ? "Salva e ricalcola" : "Salva"}</button>
         <button class="btn-reject" data-canceledit="1">Annulla</button>
+      </div>
+      <div class="confirm-actions" style="margin-top:4px">
+        <button class="btn-reject" data-delmatch="${m.id}" style="color:var(--red-light);border-color:var(--red) !important">🗑 Elimina partita</button>
       </div>
     </div>`;
   }
@@ -2759,7 +2812,15 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.editmatch) {
     const m = findMatch(t.dataset.editmatch);
     if (!m) return;
-    state.editMatch = { id: m.id, a: [...m.team_a], b: [...m.team_b] };
+    const noScore = m.score_a == null || m.score_b == null;
+    state.editMatch = {
+      id: m.id,
+      a: [...m.team_a], b: [...m.team_b],
+      noScore,
+      sa: noScore ? "" : m.score_a,
+      sb: noScore ? "" : m.score_b,
+      ws: m.winner_side ?? null,
+    };
     render();
     return;
   }
@@ -2768,12 +2829,46 @@ document.addEventListener("click", async (e) => {
     render();
     return;
   }
-  if (t.dataset.saveedit) {
-    const m = findMatch(t.dataset.saveedit);
+  if (t.dataset.editscoremode) {
+    const em = state.editMatch;
+    if (!em) return;
+    // salva i valori digitati prima del re-render
+    const ia = document.getElementById(`edit-sa-${em.id}`);
+    const ib = document.getElementById(`edit-sb-${em.id}`);
+    if (ia) em.sa = ia.value;
+    if (ib) em.sb = ib.value;
+    em.noScore = t.dataset.editscoremode === "noscore";
+    render();
+    return;
+  }
+  if (t.dataset.editwinner) {
+    const em = state.editMatch;
+    if (!em) return;
+    em.ws = t.dataset.editwinner;
+    render();
+    return;
+  }
+  if (t.dataset.delmatch) {
+    const m = findMatch(t.dataset.delmatch);
     if (!m) return;
     const msg = m.status === "confirmed"
-      ? "Salvare la nuova formazione?\nTutta la stagione verrà ricalcolata partita per partita: i delta e i rating cambieranno di conseguenza."
-      : "Salvare la nuova formazione per questa partita in attesa?";
+      ? "Eliminare questa partita?\nTutta la stagione verrà ricalcolata partita per partita: i delta e i rating cambieranno di conseguenza."
+      : "Eliminare questa partita in attesa?";
+    if (!confirm(msg)) return;
+    return withBusy(deleteMatchEdit);
+  }
+  if (t.dataset.saveedit) {
+    const em = state.editMatch;
+    const m = findMatch(t.dataset.saveedit);
+    if (!m || !em) return;
+    // salva i valori digitati prima del re-render di withBusy
+    const ia = document.getElementById(`edit-sa-${em.id}`);
+    const ib = document.getElementById(`edit-sb-${em.id}`);
+    if (ia) em.sa = ia.value;
+    if (ib) em.sb = ib.value;
+    const msg = m.status === "confirmed"
+      ? "Salvare le correzioni?\nTutta la stagione verrà ricalcolata partita per partita: i delta e i rating cambieranno di conseguenza."
+      : "Salvare le correzioni per questa partita in attesa?";
     if (!confirm(msg)) return;
     return withBusy(saveMatchEdit);
   }
