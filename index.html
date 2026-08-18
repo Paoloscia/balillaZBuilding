@@ -688,6 +688,7 @@ const state = {
   tSignup: false,
   profileId: null,
   profileMatches: null, // storico COMPLETO del giocatore aperto (caricato a parte)
+  editMatch: null, // { id, a: [...], b: [...] } quando un admin sta correggendo le formazioni
   h2hId: null,
   present: [],
   suggestedList: [], // formazioni consigliate usate, col relativo bonus
@@ -963,6 +964,50 @@ async function confirmMatch(id) {
   }).eq("id", id);
   if (!ok || upd.error) { toast("Errore nella conferma, ricarica la pagina", false); return; }
   toast("Partita confermata");
+}
+
+function findMatch(id) {
+  return state.matches.find((x) => x.id === id)
+    ?? state.pending.find((x) => x.id === id)
+    ?? state.profileMatches?.find((x) => x.id === id)
+    ?? null;
+}
+
+// Correzione formazioni da parte dell'admin. Per le pending basta aggiornare
+// le squadre (i delta si calcolano alla conferma). Per le confermate si
+// aggiornano squadre e winners e poi si ricalcola TUTTA la stagione, perche'
+// cambiare i giocatori di una partita passata invalida tutti i delta successivi.
+async function saveMatchEdit() {
+  const em = state.editMatch;
+  if (!em) return;
+  const m = findMatch(em.id);
+  if (!m) { state.editMatch = null; return; }
+  const size = m.team_a.length;
+  const a = em.a.slice(0, size);
+  const b = em.b.slice(0, size);
+  const all = [...a, ...b];
+  if (all.some((x) => !x) || new Set(all).size !== all.length) {
+    toast("Formazioni non valide: slot vuoti o giocatori duplicati", false);
+    return;
+  }
+  if (m.status === "confirmed" && !seasonById(m.season_id)?.active) {
+    toast("La stagione di questa partita è chiusa: non si può correggere", false);
+    return;
+  }
+  const noScore = m.score_a == null || m.score_b == null;
+  const aWins = noScore ? m.winner_side === "A" : m.score_a > m.score_b;
+  const patch = { team_a: a, team_b: b };
+  if (m.status === "confirmed") patch.winners = aWins ? a : b;
+  const { error } = await sb.from("matches").update(patch).eq("id", em.id);
+  if (error) { toast("Errore nel salvataggio della correzione", false); return; }
+  state.editMatch = null;
+  if (m.status === "confirmed") {
+    await loadAll();
+    if (state.profileId) state.profileMatches = null;
+    await recalcSeason();
+  } else {
+    toast("Formazioni aggiornate");
+  }
 }
 
 async function rejectMatch(id) {
@@ -1653,6 +1698,34 @@ function matchRowHTML(m, { pending = false, actions = false, showSeason = false 
         <button class="btn-confirm" data-confirm="${m.id}">Conferma</button>
         <button class="btn-reject" data-reject="${m.id}">Rifiuta</button>
       </div>` : "";
+  const editing = state.editMatch?.id === m.id;
+  const canEdit = isAdmin() && !editing &&
+    (m.status === "pending" || seasonById(m.season_id)?.active);
+  let editUI = "";
+  if (editing) {
+    const em = state.editMatch;
+    const size = m.team_a.length;
+    const taken = new Set([...em.a, ...em.b].filter(Boolean));
+    const sel = (team, key) => Array.from({ length: size }).map((_, i) => {
+      const opts = [...state.players].sort(byName).map((p) => {
+        const dis = taken.has(p.id) && team[i] !== p.id ? "disabled" : "";
+        const s = team[i] === p.id ? "selected" : "";
+        return `<option value="${p.id}" ${dis} ${s}>${esc(p.name)}</option>`;
+      }).join("");
+      return `<select data-editteam="${key}" data-editslot="${i}"
+        style="width:100%;margin-top:4px;padding:7px 8px;border:none;border-radius:7px;background:var(--cream);color:#1c1c1c;font-size:13px">
+        <option value="">— giocatore —</option>${opts}</select>`;
+    }).join("");
+    editUI = `<div style="margin-top:8px">
+      <div class="meta" style="color:var(--red-light);letter-spacing:0.1em">ROSSI</div>${sel(em.a, "a")}
+      <div class="meta" style="margin-top:6px;color:var(--blue-light);letter-spacing:0.1em">BLU</div>${sel(em.b, "b")}
+      ${m.status === "confirmed" ? `<div class="meta" style="margin-top:6px">Salvando, tutta la stagione verrà ricalcolata partita per partita.</div>` : ""}
+      <div class="confirm-actions">
+        <button class="btn-confirm" data-saveedit="${m.id}">${m.status === "confirmed" ? "Salva e ricalcola" : "Salva"}</button>
+        <button class="btn-reject" data-canceledit="1">Annulla</button>
+      </div>
+    </div>`;
+  }
   const scoreHTML = noScore
     ? `<span class="${aWon ? "win" : ""}">${aWon ? "V" : "S"}</span>
        <span style="opacity:0.5"> – </span>
@@ -1669,8 +1742,12 @@ function matchRowHTML(m, { pending = false, actions = false, showSeason = false 
       <div class="meta">${fmtDate(m.created_at)} · ${m.mode}${noScore ? " · senza punteggio" : ""}${bVal > 1 ? ` · <span style="color:var(--gold);font-weight:700">⭐ ×${bVal}</span>` : ""}${seasonTag}</div>
       <div class="meta">${deltaStr}</div>
       ${btns}
+      ${editUI}
     </div>
-    <div class="match-score">${scoreHTML}</div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+      <div class="match-score">${scoreHTML}</div>
+      ${canEdit ? `<button class="edit-btn" data-editmatch="${m.id}" title="Correggi giocatori">✏️</button>` : ""}
+    </div>
   </div>`;
 }
 
@@ -2573,6 +2650,7 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.tab) {
     state.tab = t.dataset.tab;
     state.profileId = null;
+    state.editMatch = null;
     setLoading(true);
     await loadAll();
     setLoading(false);
@@ -2677,6 +2755,27 @@ document.addEventListener("click", async (e) => {
     render();
     window.scrollTo({ top: 0, behavior: "smooth" });
     return;
+  }
+  if (t.dataset.editmatch) {
+    const m = findMatch(t.dataset.editmatch);
+    if (!m) return;
+    state.editMatch = { id: m.id, a: [...m.team_a], b: [...m.team_b] };
+    render();
+    return;
+  }
+  if (t.dataset.canceledit) {
+    state.editMatch = null;
+    render();
+    return;
+  }
+  if (t.dataset.saveedit) {
+    const m = findMatch(t.dataset.saveedit);
+    if (!m) return;
+    const msg = m.status === "confirmed"
+      ? "Salvare la nuova formazione?\nTutta la stagione verrà ricalcolata partita per partita: i delta e i rating cambieranno di conseguenza."
+      : "Salvare la nuova formazione per questa partita in attesa?";
+    if (!confirm(msg)) return;
+    return withBusy(saveMatchEdit);
   }
   if (t.id === "save-match") return withBusy(recordMatch);
   if (t.dataset.confirm) return withBusy(() => confirmMatch(t.dataset.confirm));
@@ -2842,6 +2941,13 @@ document.addEventListener("change", (e) => {
   }
   if (t.dataset.roleplayer) {
     withBusy(() => setRole(t.dataset.roleplayer, t.value));
+    return;
+  }
+  if (t.dataset.editteam) {
+    const em = state.editMatch;
+    if (!em) return;
+    em[t.dataset.editteam][Number(t.dataset.editslot)] = t.value;
+    render();
     return;
   }
   if (t.dataset.h2h) {
