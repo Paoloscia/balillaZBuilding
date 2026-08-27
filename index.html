@@ -565,6 +565,7 @@ const K = 32;
 const HANDICAP = 0.25;     // quanto pesa lo sbilanciamento interno della coppia
 const NO_SCORE_BASE = 0.5; // valore di una partita senza punteggio (10-9 ≈ 0.7)
 const LINEUP_BOOST = 1.25; // i tavoli di "Chi c'e' oggi", se meritano il bonus
+const PAIR_QUAL = { games: 10, opps: 6 }; // requisiti coppia: partite insieme e COPPIE avversarie diverse affrontate
 const INACTIVE_DAYS = 21;  // giorni senza partite dopo cui compare l'etichetta "inattivo" (nessun effetto su ELO o classifica)
 
 const expectedScore = (ra, rb) => 1 / (1 + Math.pow(10, (rb - ra) / 400));
@@ -711,6 +712,7 @@ function buildBracketFor(fmt, teams) {
 // Vincitore di un torneo concluso, qualunque sia il formato.
 function tournamentWinnerIdx(t) {
   const fmt = t.format ?? "elim";
+  if (fmt === "finale4") return null; // il campione si legge con finaleChampion(t)
   if (fmt === "girone") return gironeStandings(t)[0]?.i ?? null;
   if (fmt === "gironefinale") return t.bracket[1]?.[0]?.winner ?? null;
   if (fmt === "doppia") return t.bracket.gf?.[0]?.winner ?? null;
@@ -733,6 +735,7 @@ const state = {
   historyLimit: 50,
   challenges: [],
   ch2: false, // sfida 2v2 invece che 1v1
+  f4Excl: [], // assenti esclusi a mano dall'admin per la finale a 4
   challengesOk: true,
   numeri: null, // record di sempre, calcolati on demand
   tAuto: false,
@@ -1359,6 +1362,8 @@ async function deleteTournament(id) {
 async function recordTournamentMatch(tid, sec, r, i, sa, sbv) {
   const t = state.tournaments.find((x) => x.id === tid);
   if (!t || t.status !== "open") return;
+  // la finale a 4 si gioca a stagione GIA' chiusa e non tocca l'ELO
+  if ((t.format ?? "elim") === "finale4") return recordFinale(t, sec, i, sa, sbv);
   if (!seasonById(t.season_id)?.active) {
     toast("La stagione del torneo è chiusa", false); return;
   }
@@ -1644,9 +1649,11 @@ function computeAwards(all) {
     }
     for (const team of [m.team_a, m.team_b]) {
       if (team.length !== 2) continue;
+      const other = team === m.team_a ? m.team_b : m.team_a;
       const k = pairKey(team[0], team[1]);
-      (pairs[k] ??= { ids: [...team], w: 0, l: 0 });
+      (pairs[k] ??= { ids: [...team], w: 0, l: 0, opps: new Set() });
       winners.includes(team[0]) ? pairs[k].w++ : pairs[k].l++;
+      if (other.length === 2) pairs[k].opps.add(pairKey(other[0], other[1]));
     }
   }
   const top = (obj, val) => {
@@ -1660,7 +1667,10 @@ function computeAwards(all) {
   const st = top(streakBest, (id) => (streakBest[id] >= 3 ? streakBest[id] : null));
   const g = top(games, (id) => games[id]);
   const cl = top(startElo, (id) => (byId(id) ? byId(id).elo - startElo[id] : null));
-  const bp = Object.values(pairs).filter((p) => p.w + p.l >= 3)
+  // coppia d'oro: stessi requisiti delle "migliori coppie"
+  // (almeno PAIR_QUAL.games partite insieme contro PAIR_QUAL.opps coppie avversarie diverse)
+  const bp = Object.values(pairs)
+    .filter((p) => p.w + p.l >= PAIR_QUAL.games && p.opps.size >= PAIR_QUAL.opps)
     .sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l) || b.w - a.w)[0] ?? null;
   // miglior win rate tra i CLASSIFICATI (stessi requisiti della classifica)
   let wr = null;
@@ -1965,9 +1975,11 @@ function computeNumeri(all) {
       rival[k] = (rival[k] ?? 0) + 1;
     }
     for (const team of [m.team_a, m.team_b]) if (team.length === 2) {
+      const other = team === m.team_a ? m.team_b : m.team_a;
       const k = pairKey(team[0], team[1]);
-      (pairs[k] ??= { ids: [...team], w: 0, l: 0 });
+      (pairs[k] ??= { ids: [...team], w: 0, l: 0, opps: new Set() });
       winners.includes(team[0]) ? pairs[k].w++ : pairs[k].l++;
+      if (other.length === 2) pairs[k].opps.add(pairKey(other[0], other[1]));
     }
     for (const id of [...m.team_a, ...m.team_b]) {
       (pg[id] ??= { g: 0, w: 0 });
@@ -1991,10 +2003,12 @@ function computeNumeri(all) {
     const n = p.w + p.l;
     if (!mate || n > mate.n) mate = { ids: p.ids, n };
   }
-  // migliori coppie di sempre (winrate, minimo 3 partite insieme)
-  const pairsBest = Object.values(pairs).filter((p) => p.w + p.l >= 3)
+  // migliori coppie di sempre: TUTTE quelle qualificate
+  // (almeno PAIR_QUAL.games partite insieme contro PAIR_QUAL.opps coppie avversarie diverse)
+  const pairsBest = Object.values(pairs)
+    .filter((p) => p.w + p.l >= PAIR_QUAL.games && p.opps.size >= PAIR_QUAL.opps)
     .sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l) || b.w - a.w)
-    .slice(0, 5);
+    .map(({ ids, w, l }) => ({ ids, w, l }));
   // winrate carriera piu' alto tra chi ha almeno 100 partite
   let wrBest = null;
   for (const [id, s] of Object.entries(pg)) {
@@ -2011,6 +2025,99 @@ function computeNumeri(all) {
     pairsBest,
     wrBest,
   };
+}
+
+// ---------- Finale a 4 (campione di stagione) ----------
+// La stagione regolare serve a QUALIFICARSI: a stagione chiusa i primi 4
+// dello snapshot giocano 3 partite a coppie rotanti (tutte le combinazioni).
+// Campione = piu' gol totali; parita': piu' vittorie, poi differenza reti,
+// poi spareggio 1v1. Le partite NON toccano l'ELO e non entrano nello storico:
+// vivono nel bracket di un torneo con format "finale4" (teams vuoto).
+const F4_PAIRINGS = [
+  [[0, 3], [1, 2]],
+  [[0, 2], [1, 3]],
+  [[0, 1], [2, 3]],
+];
+
+function finaleStats(t) {
+  const br = t.bracket;
+  const stats = br.players.map((id) => ({ id, goals: 0, wins: 0, diff: 0 }));
+  let played = 0;
+  for (const m of br.matches) {
+    if (!m.score) continue;
+    played++;
+    const [sa, sbv] = m.score;
+    for (const pi of m.a) { stats[pi].goals += sa; stats[pi].diff += sa - sbv; if (sa > sbv) stats[pi].wins++; }
+    for (const pi of m.b) { stats[pi].goals += sbv; stats[pi].diff += sbv - sa; if (sbv > sa) stats[pi].wins++; }
+  }
+  const order = [...stats].sort((x, y) => y.goals - x.goals || y.wins - x.wins || y.diff - x.diff);
+  return { stats, order, played, total: br.matches.length };
+}
+
+function finaleChampion(t) {
+  const { order, played, total } = finaleStats(t);
+  if (played < total) return { status: "playing" };
+  const [a, b] = order;
+  const tied = a.goals === b.goals && a.wins === b.wins && a.diff === b.diff;
+  if (!tied) return { status: "done", id: a.id, goals: a.goals };
+  const tb = t.bracket.tiebreak;
+  if (tb?.score) {
+    const winId = tb.score[0] > tb.score[1] ? tb.a : tb.b;
+    return { status: "done", id: winId, goals: order.find((s) => s.id === winId)?.goals ?? 0 };
+  }
+  return { status: "tiebreak", ids: [a.id, b.id] };
+}
+
+async function createFinale(sid) {
+  const res = state.results[sid] ?? [];
+  const excl = new Set(state.f4Excl);
+  const finalists = res
+    .filter((r) => !excl.has(r.player_id) && byId(r.player_id))
+    .slice(0, 4)
+    .map((r) => r.player_id);
+  if (finalists.length < 4) { toast("Servono 4 giocatori disponibili in classifica", false); return; }
+  const bracket = {
+    players: finalists,
+    matches: F4_PAIRINGS.map(([a, b]) => ({ a, b, score: null })),
+    tiebreak: null,
+  };
+  const s = seasonById(sid);
+  const ins = await sb.from("tournaments").insert({
+    name: `Finale ${s?.name ?? ""}`.trim(),
+    season_id: sid,
+    teams: [],
+    bracket,
+    status: "open",
+    rated: false,
+    format: "finale4",
+  });
+  if (ins.error) { toast("Errore nella creazione della finale", false); return; }
+  state.f4Excl = [];
+  toast("Finale a 4 lanciata!");
+}
+
+async function recordFinale(t, sec, i, sa, sbv) {
+  if (!Number.isInteger(sa) || !Number.isInteger(sbv) || sa < 0 || sbv < 0 || sa === sbv) {
+    toast("Punteggio non valido", false); return;
+  }
+  const br = t.bracket;
+  if (sec === "fs") {
+    if (!br.tiebreak || br.tiebreak.score) return;
+    br.tiebreak.score = [sa, sbv];
+  } else {
+    const m = br.matches[i];
+    if (!m || m.score) return;
+    m.score = [sa, sbv];
+  }
+  let status = "open";
+  const ch = finaleChampion(t);
+  if (ch.status === "tiebreak" && !br.tiebreak) br.tiebreak = { a: ch.ids[0], b: ch.ids[1], score: null };
+  if (ch.status === "done") status = "done";
+  const upd = await sb.from("tournaments").update({ bracket: br, status }).eq("id", t.id);
+  if (upd.error) { toast("Risultato non salvato: ricarica", false); return; }
+  if (status === "done") toast(`👑 ${nameOf(ch.id)} è il campione di stagione!`);
+  else if (ch.status === "tiebreak") toast("Parità perfetta: serve lo spareggio 1v1");
+  else toast("Risultato registrato");
 }
 
 // ---------- UI ----------
@@ -2226,7 +2333,11 @@ function badgesOf(pid, d) {
     if (mine.rank === 1) titoli++;
     if (mine.rank === res.length && res.length > 1) cucchiai++;
   }
-  if (titoli) out.push({ icon: "👑", label: `Stagioni vinte ×${titoli}` });
+  if (titoli) out.push({ icon: "🥇", label: `Regular season vinte ×${titoli}` });
+  const corone = state.tournaments.filter((t) =>
+    t.status === "done" && (t.format ?? "elim") === "finale4" &&
+    finaleChampion(t).id === pid).length;
+  if (corone) out.push({ icon: "👑", label: `Campione di stagione ×${corone}` });
   if (cucchiai) out.push({ icon: "🥄", label: `Cucchiaio di legno ×${cucchiai}` });
   const tornei = state.tournaments.filter((t) => {
     if (t.status !== "done") return false;
@@ -2363,7 +2474,11 @@ function render() {
           ? `Iscrizioni aperte per "${esc(signupTs[0].name)}"`
           : `${signupTs.length} tornei con iscrizioni aperte`} · tocca per iscriverti</div>`
       : "";
-    let out = signupNote + ranked.map((p, i) => rowHTML(p, i, null)).join("");
+    const finaleNote = `<div class="info-card" style="margin-bottom:12px">
+      <h3>COME SI DIVENTA CAMPIONE</h3>
+      <p class="meta">La classifica ELO serve a qualificarsi: a fine stagione i <b>primi 4</b> giocano la finale a coppie rotanti, 3 partite con tutte le combinazioni di coppie. Il titolo di <b>campione di stagione</b> va a chi segna più gol in totale. In caso di parità contano prima le vittorie nelle 3 partite, poi la differenza reti, poi uno spareggio 1v1.</p>
+    </div>`;
+    let out = signupNote + finaleNote + ranked.map((p, i) => rowHTML(p, i, null)).join("");
     out += volataHTML(ranked);
     if (!ranked.length)
       out += `<div class="empty">Nessuno si è ancora qualificato: servono ${QUAL.games} partite, ${QUAL.opps} avversari e ${QUAL.mates} compagni diversi.</div>`;
@@ -2711,9 +2826,10 @@ function render() {
     }
 
 
-    const signupT = state.tournaments.filter((t) => t.status === "signup");
-    const openT = state.tournaments.filter((t) => t.status === "open");
-    const doneT = state.tournaments.filter((t) => t.status === "done");
+    const notF4 = (t) => (t.format ?? "elim") !== "finale4"; // la finale vive nel tab Stagioni
+    const signupT = state.tournaments.filter((t) => t.status === "signup" && notF4(t));
+    const openT = state.tournaments.filter((t) => t.status === "open" && notF4(t));
+    const doneT = state.tournaments.filter((t) => t.status === "done" && notF4(t));
 
     if (signupT.length) html += `<div class="section-label">ISCRIZIONI APERTE</div>`;
     for (const t of signupT) {
@@ -2927,9 +3043,74 @@ function render() {
 
     const past = closedSeasons();
     if (past.length) {
+      const latestClosed = [...past].sort((a, b) => new Date(b.ended_at) - new Date(a.ended_at))[0];
       html += `<div class="section-label" style="margin-top:22px">ALBO D'ORO</div>`;
       html += past.map((s) => {
         const res = state.results[s.id] ?? [];
+
+        // finale a 4: campione, partite, spareggio, oppure lancio (solo admin, ultima stagione chiusa)
+        const fin = state.tournaments.find((t) => (t.format ?? "elim") === "finale4" && t.season_id === s.id);
+        let finaleHTML = "";
+        if (fin) {
+          const br = fin.bracket;
+          const pname = (pi) => esc(nameOf(br.players[pi]));
+          const ch = finaleChampion(fin);
+          const head = ch.status === "done"
+            ? `<p style="font-size:16px;margin-bottom:6px">👑 Campione di stagione: <b>${esc(nameOf(ch.id))}</b> (${ch.goals} gol nella finale)</p>`
+            : ch.status === "tiebreak"
+              ? `<p class="meta" style="margin-bottom:6px">🏁 Parità perfetta: spareggio 1v1 tra <b>${esc(nameOf(ch.ids[0]))}</b> e <b>${esc(nameOf(ch.ids[1]))}</b></p>`
+              : `<p class="meta" style="margin-bottom:6px">🏁 Finale a 4 in corso: campione chi segna più gol nelle 3 partite. Fuori ELO.</p>`;
+          const rows = br.matches.map((m, i) => {
+            const rec = isAdmin() && !m.score
+              ? `<div class="b-record">
+                  <input class="ts-input" type="number" min="0" id="ts-${fin.id}-f-0-${i}-a" placeholder="0">
+                  <span style="opacity:0.6">–</span>
+                  <input class="ts-input" type="number" min="0" id="ts-${fin.id}-f-0-${i}-b" placeholder="0">
+                  <button data-trecord="${fin.id}|f|0|${i}">OK</button>
+                </div>` : "";
+            return `<div class="b-match"><div class="b-team">${m.a.map(pname).join(" + ")} <b>${m.score ? `${m.score[0]}–${m.score[1]}` : "vs"}</b> ${m.b.map(pname).join(" + ")}</div>${rec}</div>`;
+          }).join("");
+          let tbHTML = "";
+          if (br.tiebreak) {
+            const tb = br.tiebreak;
+            const rec = isAdmin() && !tb.score
+              ? `<div class="b-record">
+                  <input class="ts-input" type="number" min="0" id="ts-${fin.id}-fs-0-0-a" placeholder="0">
+                  <span style="opacity:0.6">–</span>
+                  <input class="ts-input" type="number" min="0" id="ts-${fin.id}-fs-0-0-b" placeholder="0">
+                  <button data-trecord="${fin.id}|fs|0|0">OK</button>
+                </div>` : "";
+            tbHTML = `<div class="b-match"><div class="b-team">Spareggio: ${esc(nameOf(tb.a))} <b>${tb.score ? `${tb.score[0]}–${tb.score[1]}` : "vs"}</b> ${esc(nameOf(tb.b))}</div>${rec}</div>`;
+          }
+          const fst = finaleStats(fin);
+          const table = fst.played
+            ? fst.order.map((p, i) => `<div class="podium-row">
+                <span class="medal">${i === 0 && ch.status === "done" ? "👑" : `${i + 1}.`}</span>
+                <span class="player-name" style="font-size:14px">${esc(nameOf(p.id))}</span>
+                <span class="meta" style="margin-top:0">${p.wins}V · diff ${p.diff >= 0 ? "+" : ""}${p.diff}</span>
+                <span class="elo-small">${p.goals} gol</span>
+              </div>`).join("")
+            : "";
+          finaleHTML = `<div style="margin-bottom:12px">
+            ${head}${rows}${tbHTML}${table}
+            ${isAdmin() && fin.status === "open" ? `<button class="close-btn" data-deltournament="${fin.id}" style="margin-top:6px">✕ Annulla finale</button>` : ""}
+          </div>`;
+        } else if (isAdmin() && s.id === latestClosed?.id && res.filter((r) => byId(r.player_id)).length >= 4) {
+          const excl = new Set(state.f4Excl);
+          const finalists = res.filter((r) => !excl.has(r.player_id) && byId(r.player_id)).slice(0, 4);
+          const finalistIds = new Set(finalists.map((r) => r.player_id));
+          const chips = res.slice(0, 8).map((r) => {
+            const assente = excl.has(r.player_id) || !byId(r.player_id);
+            return `<button class="chip ${finalistIds.has(r.player_id) ? "chip-on" : ""}" data-f4excl="${r.player_id}"
+              style="${assente ? "text-decoration:line-through;opacity:0.55" : ""}">${r.rank}. ${esc(r.name)}</button>`;
+          }).join("");
+          finaleHTML = `<div style="margin-bottom:12px">
+            <p class="meta" style="margin-bottom:6px">🏁 <b>Finale a 4 da giocare</b>: 3 partite a coppie rotanti, campione chi segna più gol. Fuori ELO, si gioca anche a stagione nuova già in corso. Tocca un giocatore per segnarlo assente: subentrano i successivi in classifica.</p>
+            <div>${chips}</div>
+            <p class="meta" style="margin:6px 0">Finalisti: <b>${finalists.map((r) => esc(r.name)).join(", ")}</b></p>
+            ${finalists.length === 4 ? `<button class="cta" data-createfinale="${s.id}" style="font-size:14px;padding:10px 0">Lancia la finale a 4</button>` : `<p class="meta">Servono 4 giocatori disponibili.</p>`}
+          </div>`;
+        }
         const medals = ["🥇", "🥈", "🥉"];
         const podium = res.slice(0, 3).map((r, i) =>
           `<div class="podium-row">
@@ -2952,6 +3133,8 @@ function render() {
         return `<div class="info-card">
           <h3>${esc(s.name).toUpperCase()} ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina" style="float:right">✏️</button>` : ""}</h3>
           <p class="meta" style="margin-bottom:10px">${dates}</p>
+          ${finaleHTML}
+          <div class="section-label" style="margin:0 0 6px">REGULAR SEASON</div>
           ${podium || `<p class="meta">Nessun risultato archiviato.</p>`}
           ${others}
           ${awLines ? `<div style="margin-top:8px">${awLines}</div>` : ""}
@@ -3078,7 +3261,8 @@ function render() {
     // migliori coppie di sempre (winrate, min 3 insieme)
     let pairsHTML = "";
     if (n.pairsBest?.length) {
-      pairsHTML = `<div class="section-label" style="margin-top:18px">MIGLIORI COPPIE</div>`;
+      pairsHTML = `<div class="section-label" style="margin-top:18px">MIGLIORI COPPIE</div>
+        <div class="meta" style="margin-bottom:6px">Tutte le coppie con almeno ${PAIR_QUAL.games} partite insieme contro ${PAIR_QUAL.opps} coppie avversarie diverse, ordinate per percentuale di vittorie.</div>`;
       pairsHTML += n.pairsBest.map((p, i) => {
         const pct = Math.round((p.w / (p.w + p.l)) * 100);
         return `<div class="row">
@@ -3262,6 +3446,18 @@ document.addEventListener("click", async (e) => {
     if (state.tSignup) state.tAuto = false;
     render();
     return;
+  }
+  if (t.dataset.f4excl) {
+    const id = t.dataset.f4excl;
+    const k = state.f4Excl.indexOf(id);
+    if (k >= 0) state.f4Excl.splice(k, 1);
+    else state.f4Excl.push(id);
+    render();
+    return;
+  }
+  if (t.dataset.createfinale) {
+    if (!confirm("Lanciare la finale a 4 con i finalisti indicati?")) return;
+    return withBusy(() => createFinale(t.dataset.createfinale));
   }
   if (t.dataset.tauto) {
     state.tAuto = t.dataset.tauto === "1";
