@@ -145,6 +145,10 @@
   }
   .rank { font-family: var(--font-display); font-size: 22px; width: 34px; text-align: center; }
   .rank.gold { color: var(--gold); }
+  .rank.silver { color: #C9CDD3; }
+  .rank.bronze { color: #CD8A4F; }
+  .rank.top7 { color: transparent; -webkit-text-stroke: 1px #9A6B45; }
+  @supports not (-webkit-text-stroke: 1px black) { .rank.top7 { color: #9A6B45; } }
   .player-name { font-weight: 700; font-size: 16px; }
   .meta { font-size: 12px; opacity: 0.65; margin-top: 2px; }
   .elo { font-family: var(--font-display); font-size: 24px; letter-spacing: 0.02em; }
@@ -2193,6 +2197,15 @@ async function recordFinale(t, sec, i, sa, sbv) {
   else toast("Risultato registrato");
 }
 
+// colore del numero in classifica: oro, argento, bronzo, poi contorno marrone fino al 7°
+function rankClass(i) {
+  if (i === 0) return "gold";
+  if (i === 1) return "silver";
+  if (i === 2) return "bronze";
+  if (i <= 6) return "top7";
+  return "";
+}
+
 // ---------- UI ----------
 let loadingCount = 0;
 function setLoading(on) {
@@ -2398,20 +2411,38 @@ function badgesOf(pid, d) {
   }).length;
   if (giganti) out.push({ icon: "⚔️", label: `Ammazzagiganti ×${giganti}` });
   if (d.bestStreak >= 5) out.push({ icon: "🔥", label: `Striscia da ${d.bestStreak}V` });
-  let titoli = 0, cucchiai = 0;
+  let oro = 0, argento = 0, bronzo = 0;
   for (const sid of Object.keys(state.results)) {
-    const res = state.results[sid];
-    const mine = res.find((r) => r.player_id === pid);
+    const mine = (state.results[sid] ?? []).find((r) => r.player_id === pid);
     if (!mine) continue;
-    if (mine.rank === 1) titoli++;
-    if (mine.rank === res.length && res.length > 1) cucchiai++;
+    if (mine.rank === 1) oro++;
+    else if (mine.rank === 2) argento++;
+    else if (mine.rank === 3) bronzo++;
   }
-  if (titoli) out.push({ icon: "🥇", label: `Regular season vinte ×${titoli}` });
+  if (oro) out.push({ icon: "🥇", label: `Regular season vinte ×${oro}` });
+  if (argento) out.push({ icon: "🥈", label: `Regular season da 2° ×${argento}` });
+  if (bronzo) out.push({ icon: "🥉", label: `Regular season da 3° ×${bronzo}` });
   const corone = state.tournaments.filter((t) =>
     t.status === "done" && (t.format ?? "elim") === "finale4" &&
     finaleChampion(t).id === pid).length;
   if (corone) out.push({ icon: "👑", label: `Campione di stagione ×${corone}` });
-  if (cucchiai) out.push({ icon: "🥄", label: `Cucchiaio di legno ×${cucchiai}` });
+  // qualificato all'evento di fine stagione (play-in o finale) senza vincere il titolo
+  let qualif = 0;
+  for (const s of closedSeasons()) {
+    const fin = state.tournaments.find((t) =>
+      (t.format ?? "elim") === "finale4" && t.season_id === s.id && t.status === "done");
+    if (!fin) continue;
+    const chId = finaleChampion(fin).id;
+    const pinT = state.tournaments.find((t) =>
+      (t.format ?? "elim") === "playin4" && t.season_id === s.id);
+    const ids = new Set([
+      ...(fin.bracket.players ?? []),
+      ...(pinT?.bracket.players ?? []),
+      ...(pinT?.bracket.protected ?? []),
+    ]);
+    if (ids.has(pid) && pid !== chId) qualif++;
+  }
+  if (qualif) out.push({ icon: "🏅", label: `Qualificato alle finali ×${qualif}` });
   const tornei = state.tournaments.filter((t) => {
     if (t.status !== "done") return false;
     const winIdx = tournamentWinnerIdx(t);
@@ -2530,7 +2561,7 @@ function render() {
         ? `<div class="meta">${q.games}/${QUAL.games} partite · ${q.opps}/${QUAL.opps} avversari · ${q.mates}/${QUAL.mates} compagni</div>`
         : "";
       return `<div class="row ${i === 0 ? "first" : ""}" data-profile="${p.id}" style="cursor:pointer${q ? ";opacity:0.7" : ""}">
-        <div class="rank ${i === 0 ? "gold" : ""}">${q ? "–" : i + 1}</div>
+        <div class="rank ${q ? "" : rankClass(i)}">${q ? "–" : i + 1}</div>
         <div style="flex:1">
           <div class="player-name">${esc(p.name)}</div>
           <div class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}%` : ""}${streak ? " · " + streak : ""}${inactive ? ` · 💤 inattivo${inactiveDays != null ? ` da ${inactiveDays}g` : ""}` : ""}</div>
@@ -3222,14 +3253,42 @@ function render() {
             ${avail.length >= 4 ? `<button class="close-btn" data-createfinale="${s.id}" style="margin-top:6px">Salta il play-in: finale diretta coi primi 4</button>` : ""}
           </div>`;
         }
+
+        const medals = ["🥇", "🥈", "🥉"];
+        const podium = res.slice(0, 3).map((r, i) =>
+          `<div class="podium-row">
+            <span class="medal">${medals[i]}</span>
+            <span class="player-name" style="font-size:15px">${esc(r.name)}</span>
+            <span class="meta" style="margin-top:0">${r.wins}V–${r.losses}S</span>
+            <span class="elo-small">${r.elo}</span>
+          </div>`
+        ).join("");
+        const aw = s.awards ?? {};
+        const awLines = [
+          aw.winrate ? `🎯 Miglior win rate: <b>${esc(aw.winrate.name)}</b> (${aw.winrate.pct}%, ${aw.winrate.w}V–${aw.winrate.l}S)` : "",
+          aw.streak ? `🔥 Striscia migliore: <b>${esc(aw.streak.name)}</b> (${aw.streak.n}V)` : "",
+          aw.games ? `🎮 Più partite: <b>${esc(aw.games.name)}</b> (${aw.games.n})` : "",
+          aw.climber ? `📈 Scalata della stagione: <b>${esc(aw.climber.name)}</b> (+${aw.climber.delta})` : "",
+          aw.pair ? `🤝 Coppia d'oro: <b>${esc(aw.pair.names)}</b> (${aw.pair.w}V–${aw.pair.l}S)` : "",
+        ].filter(Boolean).map((l) => `<p class="meta" style="margin-top:4px">${l}</p>`).join("");
+        const dates = `${fmtDate(s.created_at, false)} → ${s.ended_at ? fmtDate(s.ended_at, false) : "?"}`;
+        const fullList = res.length
+          ? `<div class="section-label" style="margin:12px 0 4px">CLASSIFICA COMPLETA</div>` +
+            res.map((r, i) => `<div class="podium-row">
+              <span class="medal"><span class="rank ${rankClass(i)}" style="font-size:15px;width:auto">${r.rank}.</span></span>
+              <span class="player-name" style="font-size:14px">${esc(r.name)}</span>
+              <span class="meta" style="margin-top:0">${r.wins}V–${r.losses}S</span>
+              <span class="elo-small">${r.elo}</span>
+            </div>`).join("")
+          : "";
         return `<div class="info-card">
           <h3>${esc(s.name).toUpperCase()} ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina" style="float:right">✏️</button>` : ""}</h3>
           <p class="meta" style="margin-bottom:10px">${dates}</p>
           ${finaleHTML}
           <div class="section-label" style="margin:0 0 6px">REGULAR SEASON</div>
           ${podium || `<p class="meta">Nessun risultato archiviato.</p>`}
-          ${others}
           ${awLines ? `<div style="margin-top:8px">${awLines}</div>` : ""}
+          ${fullList}
         </div>`;
       }).join("");
     }
@@ -3303,6 +3362,18 @@ function render() {
       <div class="info-card">
         <h3>CHI ENTRA IN CLASSIFICA</h3>
         <p>Per comparire in classifica servono, nella stagione: <b>10 partite</b>, <b>6 avversari diversi</b> e <b>3 compagni diversi</b>. Chi non ci arriva è tra i "non classificati" con un ELO provvisorio: poche partite, o sempre contro le stesse persone, producono un rating non confrontabile con gli altri.</p>
+      </div>
+
+      <div class="info-card">
+        <h3>I BADGE DEL PROFILO</h3>
+        <p class="meta" style="margin-bottom:8px">Compaiono nella bacheca del profilo di ciascun giocatore, solo quando conquistati.</p>
+        <p class="meta" style="margin-top:4px">🧹 <b>Cappotto</b>: vittorie lasciando gli avversari a 0 (con almeno 8 gol segnati).</p>
+        <p class="meta" style="margin-top:4px">⚔️ <b>Ammazzagiganti</b>: vittorie contro squadre con almeno 120 punti di ELO medio in più.</p>
+        <p class="meta" style="margin-top:4px">🔥 <b>Striscia</b>: la miglior serie di vittorie consecutive di sempre, se di almeno 5.</p>
+        <p class="meta" style="margin-top:4px">🥇🥈🥉 <b>Regular season</b>: stagioni chiuse al 1°, 2° o 3° posto della classifica ELO.</p>
+        <p class="meta" style="margin-top:4px">👑 <b>Campione di stagione</b>: finali a 4 vinte. È il titolo che conta.</p>
+        <p class="meta" style="margin-top:4px">🏅 <b>Qualificato alle finali</b>: partecipazioni all'evento di fine stagione (play-in o finale) senza vincere il titolo.</p>
+        <p class="meta" style="margin-top:4px">🏆 <b>Tornei vinti</b>: i tornei normali (eliminazione, doppia, girone, girone + finale). Play-in e finale non contano qui.</p>
       </div>
 
       <div class="info-card">
