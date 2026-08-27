@@ -145,10 +145,9 @@
   }
   .rank { font-family: var(--font-display); font-size: 22px; width: 34px; text-align: center; }
   .rank.gold { color: var(--gold); }
-  .rank.silver { color: #C9CDD3; }
-  .rank.bronze { color: #CD8A4F; }
-  .rank.top7 { color: transparent; -webkit-text-stroke: 1px #9A6B45; }
-  @supports not (-webkit-text-stroke: 1px black) { .rank.top7 { color: #9A6B45; } }
+  .row.second { border: 1px solid #C9CDD3; box-shadow: 0 0 14px rgba(201,205,211,0.12); }
+  .row.third { border: 1px solid #CD8A4F; box-shadow: 0 0 14px rgba(205,138,79,0.12); }
+  .row.top7 { border: 1px solid rgba(154,107,69,0.55); }
   .player-name { font-weight: 700; font-size: 16px; }
   .meta { font-size: 12px; opacity: 0.65; margin-top: 2px; }
   .elo { font-family: var(--font-display); font-size: 24px; letter-spacing: 0.02em; }
@@ -2197,11 +2196,11 @@ async function recordFinale(t, sec, i, sa, sbv) {
   else toast("Risultato registrato");
 }
 
-// colore del numero in classifica: oro, argento, bronzo, poi contorno marrone fino al 7°
+// bordo della riga in classifica: oro, argento, bronzo, poi marrone fino al 7°
 function rankClass(i) {
-  if (i === 0) return "gold";
-  if (i === 1) return "silver";
-  if (i === 2) return "bronze";
+  if (i === 0) return "first";
+  if (i === 1) return "second";
+  if (i === 2) return "third";
   if (i <= 6) return "top7";
   return "";
 }
@@ -2560,8 +2559,8 @@ function render() {
       const missing = q
         ? `<div class="meta">${q.games}/${QUAL.games} partite · ${q.opps}/${QUAL.opps} avversari · ${q.mates}/${QUAL.mates} compagni</div>`
         : "";
-      return `<div class="row ${i === 0 ? "first" : ""}" data-profile="${p.id}" style="cursor:pointer${q ? ";opacity:0.7" : ""}">
-        <div class="rank ${q ? "" : rankClass(i)}">${q ? "–" : i + 1}</div>
+      return `<div class="row ${q ? "" : rankClass(i)}" data-profile="${p.id}" style="cursor:pointer${q ? ";opacity:0.7" : ""}">
+        <div class="rank ${!q && i === 0 ? "gold" : ""}">${q ? "–" : i + 1}</div>
         <div style="flex:1">
           <div class="player-name">${esc(p.name)}</div>
           <div class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}%` : ""}${streak ? " · " + streak : ""}${inactive ? ` · 💤 inattivo${inactiveDays != null ? ` da ${inactiveDays}g` : ""}` : ""}</div>
@@ -3275,7 +3274,7 @@ function render() {
         const fullList = res.length
           ? `<div class="section-label" style="margin:12px 0 4px">CLASSIFICA COMPLETA</div>` +
             res.map((r, i) => `<div class="podium-row">
-              <span class="medal"><span class="rank ${rankClass(i)}" style="font-size:15px;width:auto">${r.rank}.</span></span>
+              <span class="medal"><span class="rank ${i === 0 ? "gold" : ""}" style="font-size:15px;width:auto">${r.rank}.</span></span>
               <span class="player-name" style="font-size:14px">${esc(r.name)}</span>
               <span class="meta" style="margin-top:0">${r.wins}V–${r.losses}S</span>
               <span class="elo-small">${r.elo}</span>
