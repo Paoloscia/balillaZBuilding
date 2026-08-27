@@ -2030,8 +2030,9 @@ function computeNumeri(all) {
 // ---------- Finale a 4 (campione di stagione) ----------
 // La stagione regolare serve a QUALIFICARSI: a stagione chiusa i primi 4
 // dello snapshot giocano 3 partite a coppie rotanti (tutte le combinazioni).
-// Campione = piu' gol totali; parita': piu' vittorie, poi differenza reti,
-// poi spareggio 1v1. Le partite NON toccano l'ELO e non entrano nello storico:
+// Campione = piu' VITTORIE nelle 3 partite; a parita' differenza reti,
+// poi spareggio 1v1. I gol totali NON sono un criterio (solo mostrati).
+// Le partite NON toccano l'ELO e non entrano nello storico:
 // vivono nel bracket di un torneo con format "finale4" (teams vuoto).
 const F4_PAIRINGS = [
   [[0, 3], [1, 2]],
@@ -2050,7 +2051,7 @@ function finaleStats(t) {
     for (const pi of m.a) { stats[pi].goals += sa; stats[pi].diff += sa - sbv; if (sa > sbv) stats[pi].wins++; }
     for (const pi of m.b) { stats[pi].goals += sbv; stats[pi].diff += sbv - sa; if (sbv > sa) stats[pi].wins++; }
   }
-  const order = [...stats].sort((x, y) => y.goals - x.goals || y.wins - x.wins || y.diff - x.diff);
+  const order = [...stats].sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.goals - x.goals);
   return { stats, order, played, total: br.matches.length };
 }
 
@@ -2058,12 +2059,13 @@ function finaleChampion(t) {
   const { order, played, total } = finaleStats(t);
   if (played < total) return { status: "playing" };
   const [a, b] = order;
-  const tied = a.goals === b.goals && a.wins === b.wins && a.diff === b.diff;
-  if (!tied) return { status: "done", id: a.id, goals: a.goals };
+  const tied = a.wins === b.wins && a.diff === b.diff;
+  if (!tied) return { status: "done", id: a.id, wins: a.wins, diff: a.diff };
   const tb = t.bracket.tiebreak;
   if (tb?.score) {
     const winId = tb.score[0] > tb.score[1] ? tb.a : tb.b;
-    return { status: "done", id: winId, goals: order.find((s) => s.id === winId)?.goals ?? 0 };
+    const ws = order.find((s) => s.id === winId);
+    return { status: "done", id: winId, wins: ws?.wins ?? 0, diff: ws?.diff ?? 0 };
   }
   return { status: "tiebreak", ids: [a.id, b.id] };
 }
@@ -2476,7 +2478,7 @@ function render() {
       : "";
     const finaleNote = `<div class="info-card" style="margin-bottom:12px">
       <h3>COME SI DIVENTA CAMPIONE</h3>
-      <p class="meta">La classifica ELO serve a qualificarsi: a fine stagione i <b>primi 4</b> giocano la finale a coppie rotanti, 3 partite con tutte le combinazioni di coppie. Il titolo di <b>campione di stagione</b> va a chi segna più gol in totale. In caso di parità contano prima le vittorie nelle 3 partite, poi la differenza reti, poi uno spareggio 1v1.</p>
+      <p class="meta">La classifica ELO serve a qualificarsi: a fine stagione i <b>primi 4</b> giocano la finale a coppie rotanti, 3 partite con tutte le combinazioni di coppie. Il titolo di <b>campione di stagione</b> si decide con le vittorie nelle 3 partite; a parità conta la differenza reti, poi uno spareggio 1v1.</p>
     </div>`;
     let out = signupNote + finaleNote + ranked.map((p, i) => rowHTML(p, i, null)).join("");
     out += volataHTML(ranked);
@@ -3056,10 +3058,10 @@ function render() {
           const pname = (pi) => esc(nameOf(br.players[pi]));
           const ch = finaleChampion(fin);
           const head = ch.status === "done"
-            ? `<p style="font-size:16px;margin-bottom:6px">👑 Campione di stagione: <b>${esc(nameOf(ch.id))}</b> (${ch.goals} gol nella finale)</p>`
+            ? `<p style="font-size:16px;margin-bottom:6px">👑 Campione di stagione: <b>${esc(nameOf(ch.id))}</b> (${ch.wins}V, diff ${ch.diff >= 0 ? "+" : ""}${ch.diff})</p>`
             : ch.status === "tiebreak"
               ? `<p class="meta" style="margin-bottom:6px">🏁 Parità perfetta: spareggio 1v1 tra <b>${esc(nameOf(ch.ids[0]))}</b> e <b>${esc(nameOf(ch.ids[1]))}</b></p>`
-              : `<p class="meta" style="margin-bottom:6px">🏁 Finale a 4 in corso: campione chi segna più gol nelle 3 partite. Fuori ELO.</p>`;
+              : `<p class="meta" style="margin-bottom:6px">🏁 Finale a 4 in corso: campione chi vince più partite; a parità differenza reti, poi spareggio 1v1. Fuori ELO.</p>`;
           const rows = br.matches.map((m, i) => {
             const rec = isAdmin() && !m.score
               ? `<div class="b-record">
@@ -3087,8 +3089,8 @@ function render() {
             ? fst.order.map((p, i) => `<div class="podium-row">
                 <span class="medal">${i === 0 && ch.status === "done" ? "👑" : `${i + 1}.`}</span>
                 <span class="player-name" style="font-size:14px">${esc(nameOf(p.id))}</span>
-                <span class="meta" style="margin-top:0">${p.wins}V · diff ${p.diff >= 0 ? "+" : ""}${p.diff}</span>
-                <span class="elo-small">${p.goals} gol</span>
+                <span class="meta" style="margin-top:0">diff ${p.diff >= 0 ? "+" : ""}${p.diff} · ${p.goals} gol</span>
+                <span class="elo-small">${p.wins}V</span>
               </div>`).join("")
             : "";
           finaleHTML = `<div style="margin-bottom:12px">
@@ -3105,7 +3107,7 @@ function render() {
               style="${assente ? "text-decoration:line-through;opacity:0.55" : ""}">${r.rank}. ${esc(r.name)}</button>`;
           }).join("");
           finaleHTML = `<div style="margin-bottom:12px">
-            <p class="meta" style="margin-bottom:6px">🏁 <b>Finale a 4 da giocare</b>: 3 partite a coppie rotanti, campione chi segna più gol. Fuori ELO, si gioca anche a stagione nuova già in corso. Tocca un giocatore per segnarlo assente: subentrano i successivi in classifica.</p>
+            <p class="meta" style="margin-bottom:6px">🏁 <b>Finale a 4 da giocare</b>: 3 partite a coppie rotanti, campione chi vince più partite (poi differenza reti, poi spareggio 1v1). Fuori ELO, si gioca anche a stagione nuova già in corso. Tocca un giocatore per segnarlo assente: subentrano i successivi in classifica.</p>
             <div>${chips}</div>
             <p class="meta" style="margin:6px 0">Finalisti: <b>${finalists.map((r) => esc(r.name)).join(", ")}</b></p>
             ${finalists.length === 4 ? `<button class="cta" data-createfinale="${s.id}" style="font-size:14px;padding:10px 0">Lancia la finale a 4</button>` : `<p class="meta">Servono 4 giocatori disponibili.</p>`}
