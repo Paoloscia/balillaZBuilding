@@ -712,7 +712,7 @@ function buildBracketFor(fmt, teams) {
 // Vincitore di un torneo concluso, qualunque sia il formato.
 function tournamentWinnerIdx(t) {
   const fmt = t.format ?? "elim";
-  if (fmt === "finale4") return null; // il campione si legge con finaleChampion(t)
+  if (fmt === "finale4" || fmt === "playin4") return null; // si legge con finaleChampion(t)
   if (fmt === "girone") return gironeStandings(t)[0]?.i ?? null;
   if (fmt === "gironefinale") return t.bracket[1]?.[0]?.winner ?? null;
   if (fmt === "doppia") return t.bracket.gf?.[0]?.winner ?? null;
@@ -1362,8 +1362,8 @@ async function deleteTournament(id) {
 async function recordTournamentMatch(tid, sec, r, i, sa, sbv) {
   const t = state.tournaments.find((x) => x.id === tid);
   if (!t || t.status !== "open") return;
-  // la finale a 4 si gioca a stagione GIA' chiusa e non tocca l'ELO
-  if ((t.format ?? "elim") === "finale4") return recordFinale(t, sec, i, sa, sbv);
+  // finale e play-in si giocano a stagione GIA' chiusa e non toccano l'ELO
+  if (["finale4", "playin4"].includes(t.format ?? "elim")) return recordFinale(t, sec, i, sa, sbv);
   if (!seasonById(t.season_id)?.active) {
     toast("La stagione del torneo è chiusa", false); return;
   }
@@ -2070,19 +2070,88 @@ function finaleChampion(t) {
   return { status: "tiebreak", ids: [a.id, b.id] };
 }
 
-async function createFinale(sid) {
-  const res = state.results[sid] ?? [];
+// Scontri diretti di stagione tra due giocatori (sponde opposte): >0 se ha vinto di piu' a.
+// NOTA: usa la finestra delle 600 partite, per stagioni lunghissime puo' essere parziale.
+function h2h(sid, aId, bId) {
+  let d = 0;
+  for (const m of state.matches) {
+    if (m.season_id !== sid) continue;
+    const aInA = m.team_a.includes(aId), aInB = m.team_b.includes(aId);
+    const bInA = m.team_a.includes(bId), bInB = m.team_b.includes(bId);
+    if (!((aInA && bInB) || (aInB && bInA))) continue;
+    const winners = m.winners ?? [];
+    if (winners.includes(aId)) d++;
+    else if (winners.includes(bId)) d--;
+  }
+  return d;
+}
+
+// Ordine di qualificazione dallo snapshot: ELO, a parita' scontri diretti, poi win rate.
+function seedOrder(sid) {
+  const res = [...(state.results[sid] ?? [])];
+  res.sort((a, b) => {
+    if (b.elo !== a.elo) return b.elo - a.elo;
+    const d = h2h(sid, a.player_id, b.player_id);
+    if (d !== 0) return -d;
+    const wr = (r) => (r.wins + r.losses) ? r.wins / (r.wins + r.losses) : 0;
+    return wr(b) - wr(a) || a.rank - b.rank;
+  });
+  return res;
+}
+
+// Ordine dei candidati alla finale: protetti, vincitore del play-in, altri del
+// play-in nell'ordine della loro classifica, poi il resto della graduatoria.
+function finaleCandidates(sid) {
+  const ordered = seedOrder(sid).map((r) => r.player_id).filter((id) => byId(id));
+  const pin = state.tournaments.find((t) =>
+    (t.format ?? "elim") === "playin4" && t.season_id === sid && t.status === "done");
+  if (!pin) return ordered;
+  const ch = finaleChampion(pin);
+  const { order } = finaleStats(pin);
+  const protectedIds = (pin.bracket.protected ?? []).filter((id) => byId(id));
+  const pinOrder = [ch.id, ...order.map((p) => p.id).filter((id) => id !== ch.id && byId(id))];
+  const seen = new Set([...protectedIds, ...pinOrder]);
+  const rest = ordered.filter((id) => !seen.has(id));
+  return [...protectedIds, ...pinOrder, ...rest];
+}
+
+async function createPlayin(sid) {
   const excl = new Set(state.f4Excl);
-  const finalists = res
-    .filter((r) => !excl.has(r.player_id) && byId(r.player_id))
-    .slice(0, 4)
-    .map((r) => r.player_id);
+  const avail = seedOrder(sid).filter((r) => byId(r.player_id) && !excl.has(r.player_id));
+  if (avail.length < 7) { toast("Servono 7 giocatori disponibili (3 protetti + 4 al play-in)", false); return; }
+  const protectedIds = avail.slice(0, 3).map((r) => r.player_id);
+  const players = avail.slice(3, 7).map((r) => r.player_id);
+  const bracket = {
+    players,
+    matches: F4_PAIRINGS.map(([a, b]) => ({ a, b, score: null })),
+    tiebreak: null,
+    protected: protectedIds,
+  };
+  const s = seasonById(sid);
+  const ins = await sb.from("tournaments").insert({
+    name: `Play-in ${s?.name ?? ""}`.trim(),
+    season_id: sid,
+    teams: [],
+    bracket,
+    status: "open",
+    rated: false,
+    format: "playin4",
+  });
+  if (ins.error) { toast("Errore nella creazione del play-in", false); return; }
+  state.f4Excl = [];
+  toast("Play-in lanciato!");
+}
+
+async function createFinale(sid) {
+  const excl = new Set(state.f4Excl);
+  const finalists = finaleCandidates(sid).filter((id) => !excl.has(id)).slice(0, 4);
   if (finalists.length < 4) { toast("Servono 4 giocatori disponibili in classifica", false); return; }
   const bracket = {
-    players: finalists,
+    players: [...finalists],
     matches: F4_PAIRINGS.map(([a, b]) => ({ a, b, score: null })),
     tiebreak: null,
   };
+  // finalists e' gia' un array di id (da finaleCandidates)
   const s = seasonById(sid);
   const ins = await sb.from("tournaments").insert({
     name: `Finale ${s?.name ?? ""}`.trim(),
@@ -2117,8 +2186,10 @@ async function recordFinale(t, sec, i, sa, sbv) {
   if (ch.status === "done") status = "done";
   const upd = await sb.from("tournaments").update({ bracket: br, status }).eq("id", t.id);
   if (upd.error) { toast("Risultato non salvato: ricarica", false); return; }
-  if (status === "done") toast(`👑 ${nameOf(ch.id)} è il campione di stagione!`);
-  else if (ch.status === "tiebreak") toast("Parità perfetta: serve lo spareggio 1v1");
+  if (status === "done") {
+    if ((t.format ?? "") === "playin4") toast(`🎟 ${nameOf(ch.id)} vince il play-in ed entra in finale!`);
+    else toast(`👑 ${nameOf(ch.id)} è il campione di stagione!`);
+  } else if (ch.status === "tiebreak") toast("Parità perfetta: serve lo spareggio 1v1");
   else toast("Risultato registrato");
 }
 
@@ -2478,7 +2549,7 @@ function render() {
       : "";
     const finaleNote = `<div class="info-card" style="margin-bottom:12px">
       <h3>COME SI DIVENTA CAMPIONE</h3>
-      <p class="meta">La classifica ELO serve a qualificarsi: a fine stagione i <b>primi 4</b> giocano la finale a coppie rotanti, 3 partite con tutte le combinazioni di coppie. Il titolo di <b>campione di stagione</b> si decide con le vittorie nelle 3 partite; a parità conta la differenza reti, poi uno spareggio 1v1.</p>
+      <p class="meta">La classifica ELO serve a qualificarsi: a fine stagione i <b>primi 3</b> vanno in finale di diritto, mentre dal <b>4° al 7°</b> si gioca il play-in per l'ultimo posto. Finale e play-in sono a coppie rotanti: 3 partite con tutte le combinazioni, vince chi fa più vittorie; a parità conta la differenza reti, poi uno spareggio 1v1. A parità di ELO in classifica contano gli scontri diretti, poi il win rate.</p>
     </div>`;
     let out = signupNote + finaleNote + ranked.map((p, i) => rowHTML(p, i, null)).join("");
     out += volataHTML(ranked);
@@ -2828,7 +2899,7 @@ function render() {
     }
 
 
-    const notF4 = (t) => (t.format ?? "elim") !== "finale4"; // la finale vive nel tab Stagioni
+    const notF4 = (t) => !["finale4", "playin4"].includes(t.format ?? "elim"); // finale e play-in vivono nel tab Stagioni
     const signupT = state.tournaments.filter((t) => t.status === "signup" && notF4(t));
     const openT = state.tournaments.filter((t) => t.status === "open" && notF4(t));
     const doneT = state.tournaments.filter((t) => t.status === "done" && notF4(t));
@@ -3050,88 +3121,107 @@ function render() {
       html += past.map((s) => {
         const res = state.results[s.id] ?? [];
 
-        // finale a 4: campione, partite, spareggio, oppure lancio (solo admin, ultima stagione chiusa)
+        // finale a 4 e play-in: la corona sta sopra la regular season
         const fin = state.tournaments.find((t) => (t.format ?? "elim") === "finale4" && t.season_id === s.id);
+        const pin = state.tournaments.find((t) => (t.format ?? "elim") === "playin4" && t.season_id === s.id);
+        const isLatest = s.id === latestClosed?.id;
         let finaleHTML = "";
-        if (fin) {
-          const br = fin.bracket;
+
+        // card condivisa per i tornei a coppie rotanti (finale e play-in)
+        const rotCard = (t, kind) => {
+          const br = t.bracket;
           const pname = (pi) => esc(nameOf(br.players[pi]));
-          const ch = finaleChampion(fin);
+          const ch = finaleChampion(t);
           const head = ch.status === "done"
-            ? `<p style="font-size:16px;margin-bottom:6px">👑 Campione di stagione: <b>${esc(nameOf(ch.id))}</b> (${ch.wins}V, diff ${ch.diff >= 0 ? "+" : ""}${ch.diff})</p>`
+            ? (kind === "playin"
+              ? `<p style="font-size:15px;margin-bottom:6px">🎟 Play-in: <b>${esc(nameOf(ch.id))}</b> conquista l'ultimo posto in finale (${ch.wins}V, diff ${ch.diff >= 0 ? "+" : ""}${ch.diff})</p>`
+              : `<p style="font-size:16px;margin-bottom:6px">👑 Campione di stagione: <b>${esc(nameOf(ch.id))}</b> (${ch.wins}V, diff ${ch.diff >= 0 ? "+" : ""}${ch.diff})</p>`)
             : ch.status === "tiebreak"
               ? `<p class="meta" style="margin-bottom:6px">🏁 Parità perfetta: spareggio 1v1 tra <b>${esc(nameOf(ch.ids[0]))}</b> e <b>${esc(nameOf(ch.ids[1]))}</b></p>`
-              : `<p class="meta" style="margin-bottom:6px">🏁 Finale a 4 in corso: campione chi vince più partite; a parità differenza reti, poi spareggio 1v1. Fuori ELO.</p>`;
+              : (kind === "playin"
+                ? `<p class="meta" style="margin-bottom:6px">🎟 Play-in in corso (4°-7°): in palio l'ultimo posto in finale. Vince chi fa più vittorie nelle 3 partite; a parità differenza reti, poi spareggio 1v1. Fuori ELO.</p>`
+                : `<p class="meta" style="margin-bottom:6px">🏁 Finale a 4 in corso: campione chi vince più partite; a parità differenza reti, poi spareggio 1v1. Fuori ELO.</p>`);
           const rows = br.matches.map((m, i) => {
-            const rec = isAdmin() && !m.score
+            const rec = isAdmin() && !m.score && t.status === "open"
               ? `<div class="b-record">
-                  <input class="ts-input" type="number" min="0" id="ts-${fin.id}-f-0-${i}-a" placeholder="0">
+                  <input class="ts-input" type="number" min="0" id="ts-${t.id}-f-0-${i}-a" placeholder="0">
                   <span style="opacity:0.6">–</span>
-                  <input class="ts-input" type="number" min="0" id="ts-${fin.id}-f-0-${i}-b" placeholder="0">
-                  <button data-trecord="${fin.id}|f|0|${i}">OK</button>
+                  <input class="ts-input" type="number" min="0" id="ts-${t.id}-f-0-${i}-b" placeholder="0">
+                  <button data-trecord="${t.id}|f|0|${i}">OK</button>
                 </div>` : "";
             return `<div class="b-match"><div class="b-team">${m.a.map(pname).join(" + ")} <b>${m.score ? `${m.score[0]}–${m.score[1]}` : "vs"}</b> ${m.b.map(pname).join(" + ")}</div>${rec}</div>`;
           }).join("");
           let tbHTML = "";
           if (br.tiebreak) {
             const tb = br.tiebreak;
-            const rec = isAdmin() && !tb.score
+            const rec = isAdmin() && !tb.score && t.status === "open"
               ? `<div class="b-record">
-                  <input class="ts-input" type="number" min="0" id="ts-${fin.id}-fs-0-0-a" placeholder="0">
+                  <input class="ts-input" type="number" min="0" id="ts-${t.id}-fs-0-0-a" placeholder="0">
                   <span style="opacity:0.6">–</span>
-                  <input class="ts-input" type="number" min="0" id="ts-${fin.id}-fs-0-0-b" placeholder="0">
-                  <button data-trecord="${fin.id}|fs|0|0">OK</button>
+                  <input class="ts-input" type="number" min="0" id="ts-${t.id}-fs-0-0-b" placeholder="0">
+                  <button data-trecord="${t.id}|fs|0|0">OK</button>
                 </div>` : "";
             tbHTML = `<div class="b-match"><div class="b-team">Spareggio: ${esc(nameOf(tb.a))} <b>${tb.score ? `${tb.score[0]}–${tb.score[1]}` : "vs"}</b> ${esc(nameOf(tb.b))}</div>${rec}</div>`;
           }
-          const fst = finaleStats(fin);
+          const fst = finaleStats(t);
           const table = fst.played
             ? fst.order.map((p, i) => `<div class="podium-row">
-                <span class="medal">${i === 0 && ch.status === "done" ? "👑" : `${i + 1}.`}</span>
+                <span class="medal">${i === 0 && ch.status === "done" ? (kind === "playin" ? "🎟" : "👑") : `${i + 1}.`}</span>
                 <span class="player-name" style="font-size:14px">${esc(nameOf(p.id))}</span>
                 <span class="meta" style="margin-top:0">diff ${p.diff >= 0 ? "+" : ""}${p.diff} · ${p.goals} gol</span>
                 <span class="elo-small">${p.wins}V</span>
               </div>`).join("")
             : "";
-          finaleHTML = `<div style="margin-bottom:12px">
-            ${head}${rows}${tbHTML}${table}
-            ${isAdmin() && fin.status === "open" ? `<button class="close-btn" data-deltournament="${fin.id}" style="margin-top:6px">✕ Annulla finale</button>` : ""}
+          const protectedLine = kind === "playin" && br.protected?.length
+            ? `<p class="meta" style="margin:6px 0 0">In finale di diritto: <b>${br.protected.map(nameOf).map(esc).join(", ")}</b></p>` : "";
+          return `<div style="margin-bottom:12px">
+            ${head}${rows}${tbHTML}${table}${protectedLine}
+            ${isAdmin() && t.status === "open" ? `<button class="close-btn" data-deltournament="${t.id}" style="margin-top:6px">✕ Annulla ${kind === "playin" ? "play-in" : "finale"}</button>` : ""}
           </div>`;
-        } else if (isAdmin() && s.id === latestClosed?.id && res.filter((r) => byId(r.player_id)).length >= 4) {
+        };
+
+        if (fin) {
+          finaleHTML = rotCard(fin, "finale") + (pin ? rotCard(pin, "playin") : "");
+        } else if (pin && pin.status === "open") {
+          finaleHTML = rotCard(pin, "playin");
+        } else if (pin && pin.status === "done") {
+          finaleHTML = rotCard(pin, "playin");
+          if (isAdmin() && isLatest) {
+            const cands = finaleCandidates(s.id);
+            const excl = new Set(state.f4Excl);
+            const finalists = cands.filter((id) => !excl.has(id)).slice(0, 4);
+            const fset = new Set(finalists);
+            const chips = cands.slice(0, 8).map((id) =>
+              `<button class="chip ${fset.has(id) ? "chip-on" : ""}" data-f4excl="${id}"
+                style="${excl.has(id) ? "text-decoration:line-through;opacity:0.55" : ""}">${esc(nameOf(id))}</button>`).join("");
+            finaleHTML += `<div style="margin-bottom:12px">
+              <p class="meta" style="margin-bottom:6px">🏁 <b>Finale a 4 da lanciare</b>: i 3 protetti più il vincitore del play-in. Tocca un giocatore per segnarlo assente: subentra il successivo (prima gli altri del play-in nell'ordine della loro classifica, poi la graduatoria di stagione).</p>
+              <div>${chips}</div>
+              <p class="meta" style="margin:6px 0">Finalisti: <b>${finalists.map(nameOf).map(esc).join(", ")}</b></p>
+              ${finalists.length === 4 ? `<button class="cta" data-createfinale="${s.id}" style="font-size:14px;padding:10px 0">Lancia la finale a 4</button>` : `<p class="meta">Servono 4 giocatori disponibili.</p>`}
+            </div>`;
+          }
+        } else if (isAdmin() && isLatest && res.length >= 4) {
+          // passo 1: lancio del play-in (o finale diretta se il gruppo e' piccolo)
+          const ordered = seedOrder(s.id).filter((r) => byId(r.player_id));
           const excl = new Set(state.f4Excl);
-          const finalists = res.filter((r) => !excl.has(r.player_id) && byId(r.player_id)).slice(0, 4);
-          const finalistIds = new Set(finalists.map((r) => r.player_id));
-          const chips = res.slice(0, 8).map((r) => {
-            const assente = excl.has(r.player_id) || !byId(r.player_id);
-            return `<button class="chip ${finalistIds.has(r.player_id) ? "chip-on" : ""}" data-f4excl="${r.player_id}"
-              style="${assente ? "text-decoration:line-through;opacity:0.55" : ""}">${r.rank}. ${esc(r.name)}</button>`;
+          const avail = ordered.filter((r) => !excl.has(r.player_id));
+          const prot = avail.slice(0, 3), inPlay = avail.slice(3, 7);
+          const inSet = new Set([...prot, ...inPlay].map((r) => r.player_id));
+          const chips = ordered.slice(0, 10).map((r, i) => {
+            const off = excl.has(r.player_id);
+            return `<button class="chip ${inSet.has(r.player_id) ? "chip-on" : ""}" data-f4excl="${r.player_id}"
+              style="${off ? "text-decoration:line-through;opacity:0.55" : ""}">${i + 1}. ${esc(r.name)}</button>`;
           }).join("");
           finaleHTML = `<div style="margin-bottom:12px">
-            <p class="meta" style="margin-bottom:6px">🏁 <b>Finale a 4 da giocare</b>: 3 partite a coppie rotanti, campione chi vince più partite (poi differenza reti, poi spareggio 1v1). Fuori ELO, si gioca anche a stagione nuova già in corso. Tocca un giocatore per segnarlo assente: subentrano i successivi in classifica.</p>
+            <p class="meta" style="margin-bottom:6px">🎟 <b>Play-in da lanciare</b>: i primi 3 vanno in finale di diritto, dal 4° al 7° ci si gioca l'ultimo posto (3 partite a coppie rotanti, fuori ELO). A parità di ELO l'ordine guarda gli scontri diretti, poi il win rate. Tocca un giocatore per segnarlo assente: subentrano i successivi in classifica.</p>
             <div>${chips}</div>
-            <p class="meta" style="margin:6px 0">Finalisti: <b>${finalists.map((r) => esc(r.name)).join(", ")}</b></p>
-            ${finalists.length === 4 ? `<button class="cta" data-createfinale="${s.id}" style="font-size:14px;padding:10px 0">Lancia la finale a 4</button>` : `<p class="meta">Servono 4 giocatori disponibili.</p>`}
+            <p class="meta" style="margin:6px 0">In finale di diritto: <b>${prot.map((r) => esc(r.name)).join(", ") || "—"}</b></p>
+            <p class="meta" style="margin:0 0 6px">Al play-in: <b>${inPlay.map((r) => esc(r.name)).join(", ") || "—"}</b></p>
+            ${inPlay.length === 4 ? `<button class="cta" data-createplayin="${s.id}" style="font-size:14px;padding:10px 0">Lancia il play-in (4°-7°)</button>` : `<p class="meta">Per il play-in servono 7 giocatori disponibili.</p>`}
+            ${avail.length >= 4 ? `<button class="close-btn" data-createfinale="${s.id}" style="margin-top:6px">Salta il play-in: finale diretta coi primi 4</button>` : ""}
           </div>`;
         }
-        const medals = ["🥇", "🥈", "🥉"];
-        const podium = res.slice(0, 3).map((r, i) =>
-          `<div class="podium-row">
-            <span class="medal">${medals[i]}</span>
-            <span class="player-name" style="font-size:15px">${esc(r.name)}</span>
-            <span class="meta" style="margin-top:0">${r.wins}V–${r.losses}S</span>
-            <span class="elo-small">${r.elo}</span>
-          </div>`
-        ).join("");
-        const others = res.length > 3 ? `<div class="meta" style="margin-top:6px">e altri ${res.length - 3} giocatori</div>` : "";
-        const aw = s.awards ?? {};
-        const awLines = [
-          aw.winrate ? `🎯 Miglior win rate: <b>${esc(aw.winrate.name)}</b> (${aw.winrate.pct}%, ${aw.winrate.w}V–${aw.winrate.l}S)` : "",
-          aw.streak ? `🔥 Striscia migliore: <b>${esc(aw.streak.name)}</b> (${aw.streak.n}V)` : "",
-          aw.games ? `🎮 Più partite: <b>${esc(aw.games.name)}</b> (${aw.games.n})` : "",
-          aw.climber ? `📈 Scalata della stagione: <b>${esc(aw.climber.name)}</b> (+${aw.climber.delta})` : "",
-          aw.pair ? `🤝 Coppia d'oro: <b>${esc(aw.pair.names)}</b> (${aw.pair.w}V–${aw.pair.l}S)` : "",
-        ].filter(Boolean).map((l) => `<p class="meta" style="margin-top:4px">${l}</p>`).join("");
-        const dates = `${fmtDate(s.created_at, false)} → ${s.ended_at ? fmtDate(s.ended_at, false) : "?"}`;
         return `<div class="info-card">
           <h3>${esc(s.name).toUpperCase()} ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina" style="float:right">✏️</button>` : ""}</h3>
           <p class="meta" style="margin-bottom:10px">${dates}</p>
@@ -3460,6 +3550,10 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.createfinale) {
     if (!confirm("Lanciare la finale a 4 con i finalisti indicati?")) return;
     return withBusy(() => createFinale(t.dataset.createfinale));
+  }
+  if (t.dataset.createplayin) {
+    if (!confirm("Lanciare il play-in coi 4 giocatori indicati?")) return;
+    return withBusy(() => createPlayin(t.dataset.createplayin));
   }
   if (t.dataset.tauto) {
     state.tAuto = t.dataset.tauto === "1";
