@@ -82,7 +82,7 @@ Su un DB già in produzione servono solo gli script nuovi. `loadAll` è resilien
 
 ### Finale a 4 e campione di stagione (scelta di design importante)
 
-Il CAMPIONE della stagione NON e il primo della classifica ELO: la classifica serve solo a QUALIFICARSI. A stagione chiusa, i primi 4 dello snapshot (season_results, non la classifica corrente) giocano la finale a coppie rotanti: 3 partite fisse con tutte le combinazioni (1+4 vs 2+3, 1+3 vs 2+4, 1+2 vs 3+4). Campione = piu gol totali di squadra accreditati al giocatore; a parita: piu vittorie nelle 3 partite, poi differenza reti, poi spareggio 1v1 secco (il client lo propone da solo quando serve).
+Il CAMPIONE della stagione NON e il primo della classifica ELO: la classifica serve solo a QUALIFICARSI. A stagione chiusa, i primi 4 dello snapshot (season_results, non la classifica corrente) giocano la finale a coppie rotanti: 3 partite fisse con tutte le combinazioni (1+4 vs 2+3, 1+3 vs 2+4, 1+2 vs 3+4). Campione = piu VITTORIE nelle 3 partite; a parita: differenza reti, poi spareggio 1v1 secco (il client lo propone da solo quando serve). I gol totali NON sono un criterio, vengono solo mostrati nella tabella. NOTA STORICA: la prima idea era "chi segna piu gol", poi Paolo ha corretto esplicitamente in vittorie -> diff reti -> spareggio.
 
 Dettagli implementativi:
 - La finale vive in una riga di `tournaments` con `format: "finale4"`, `rated: false`, `teams: []` e un bracket custom `{players: [4 id in ordine di rank], matches: [{a:[i,i], b:[i,i], score}], tiebreak: {a, b, score} | null}`. NIENTE nuove tabelle o colonne.
