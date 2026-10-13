@@ -739,6 +739,7 @@ const state = {
   challenges: [],
   ch2: false, // sfida 2v2 invece che 1v1
   f4Excl: [], // assenti esclusi a mano dall'admin per la finale a 4
+  openSeasonId: null, // stagione espansa nell'albo d'oro
   challengesOk: true,
   numeri: null, // record di sempre, calcolati on demand
   tAuto: false,
@@ -2543,6 +2544,19 @@ function render() {
       return;
     }
     const sorted = [...players].sort((a, b) => b.elo - a.elo);
+    // titoli vinti (finale a 4), mostrati accanto al nome come le stelle delle squadre
+    const crowns = {};
+    for (const t of state.tournaments) {
+      if (t.status !== "done" || (t.format ?? "elim") !== "finale4") continue;
+      const ch = finaleChampion(t);
+      if (ch.id) crowns[ch.id] = (crowns[ch.id] ?? 0) + 1;
+    }
+    const crownsHTML = (pid) => {
+      const n = crowns[pid] ?? 0;
+      if (!n) return "";
+      const s = n <= 3 ? "👑".repeat(n) : `👑×${n}`;
+      return ` <span style="font-size:12px" title="Titoli di campione di stagione">${s}</span>`;
+    };
     const quals = new Map(sorted.map((p) => [p.id, qualification(p)]));
     const ranked = sorted.filter((p) => quals.get(p.id).ok);
     const unranked = sorted.filter((p) => !quals.get(p.id).ok);
@@ -2562,7 +2576,7 @@ function render() {
       return `<div class="row ${q ? "" : rankClass(i)}" data-profile="${p.id}" style="cursor:pointer${q ? ";opacity:0.7" : ""}">
         <div class="rank ${!q && i === 0 ? "gold" : ""}">${q ? "–" : i + 1}</div>
         <div style="flex:1">
-          <div class="player-name">${esc(p.name)}</div>
+          <div class="player-name">${esc(p.name)}${crownsHTML(p.id)}</div>
           <div class="meta">${p.wins}V – ${p.losses}S${tot ? ` · ${pct}%` : ""}${streak ? " · " + streak : ""}${inactive ? ` · 💤 inattivo${inactiveDays != null ? ` da ${inactiveDays}g` : ""}` : ""}</div>
           ${missing}
           ${form.length ? `<div style="margin-top:4px">${dots}</div>` : ""}
@@ -3126,24 +3140,6 @@ function render() {
       html += `<div class="empty">Nessuna stagione in corso.</div>`;
     }
 
-    const planned = plannedSeasons()
-      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    if (planned.length) {
-      html += `<div class="section-label">PROSSIME STAGIONI, IN ORDINE</div>`;
-      html += planned.map((s, i) =>
-        `<div class="row ${i === 0 ? "first" : ""}">
-          <div class="rank ${i === 0 ? "gold" : ""}" style="font-size:16px">${i + 1}ª</div>
-          <div style="flex:1;min-width:0">
-            <div class="player-name">${esc(s.name)}</div>
-            <div class="meta">${i === 0 ? "parte alla chiusura della stagione in corso" : `parte dopo "${esc(planned[i - 1].name)}"`}${s.ends_at ? ` · fine prevista ${fmtDate(s.ends_at, false)}` : ""}</div>
-            ${isAdmin() ? `<input type="date" data-seasonend="${s.id}" value="${s.ends_at ? s.ends_at.slice(0, 10) : ""}"
-              style="margin-top:6px;padding:7px 10px;border:none;border-radius:7px;font-size:13px;background:var(--cream);color:#1c1c1c">` : ""}
-          </div>
-          ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina">✏️</button>
-          <button class="del-btn" data-delseason="${s.id}">✕</button>` : ""}
-        </div>`).join("");
-    }
-
     const past = closedSeasons();
     if (past.length) {
       const latestClosed = [...past].sort((a, b) => new Date(b.ended_at) - new Date(a.ended_at))[0];
@@ -3271,26 +3267,81 @@ function render() {
           aw.pair ? `🤝 Coppia d'oro: <b>${esc(aw.pair.names)}</b> (${aw.pair.w}V–${aw.pair.l}S)` : "",
         ].filter(Boolean).map((l) => `<p class="meta" style="margin-top:4px">${l}</p>`).join("");
         const dates = `${fmtDate(s.created_at, false)} → ${s.ended_at ? fmtDate(s.ended_at, false) : "?"}`;
+        // classifica archiviata con la stessa grafica della classifica attuale.
+        // lo snapshot non salva chi era qualificato: si approssima col numero
+        // di partite (>= QUAL.games), senza il criterio avversari/compagni.
+        const isQual = (r) => (r.wins + r.losses) >= QUAL.games;
+        const histRanked = res.filter(isQual);
+        const histUnranked = res.filter((r) => !isQual(r));
+        const histRow = (r, i, q) => {
+          const tot = r.wins + r.losses;
+          const pct = tot ? Math.round((r.wins / tot) * 100) : 0;
+          return `<div class="row ${q ? "" : rankClass(i)}" style="${q ? "opacity:0.7" : ""}">
+            <div class="rank ${!q && i === 0 ? "gold" : ""}">${q ? "–" : i + 1}</div>
+            <div style="flex:1">
+              <div class="player-name">${esc(r.name)}</div>
+              <div class="meta">${r.wins}V – ${r.losses}S${tot ? ` · ${pct}%` : ""}</div>
+            </div>
+            <div class="elo">${q ? "~" : ""}${r.elo}</div>
+          </div>`;
+        };
         const fullList = res.length
-          ? `<div class="section-label" style="margin:12px 0 4px">CLASSIFICA COMPLETA</div>` +
-            res.map((r, i) => `<div class="podium-row">
-              <span class="medal"><span class="rank ${i === 0 ? "gold" : ""}" style="font-size:15px;width:auto">${r.rank}.</span></span>
-              <span class="player-name" style="font-size:14px">${esc(r.name)}</span>
-              <span class="meta" style="margin-top:0">${r.wins}V–${r.losses}S</span>
-              <span class="elo-small">${r.elo}</span>
-            </div>`).join("")
+          ? `<div class="section-label" style="margin:14px 0 6px">CLASSIFICA FINALE</div>` +
+            histRanked.map((r, i) => histRow(r, i, false)).join("") +
+            (histUnranked.length
+              ? `<div class="section-label" style="margin:14px 0 6px">NON CLASSIFICATI</div>` +
+                histUnranked.map((r) => histRow(r, -1, true)).join("")
+              : "")
           : "";
+        // riga di sintesi mostrata a card chiusa: il campione, o lo stato dell'evento finale
+        const finDone = fin && fin.status === "done" ? finaleChampion(fin) : null;
+        let summary;
+        if (finDone?.id) summary = `👑 Campione: <b>${esc(nameOf(finDone.id))}</b>`;
+        else if (fin) summary = `🏁 Finale a 4 in corso`;
+        else if (pin && pin.status === "open") summary = `🎟 Play-in in corso`;
+        else if (isAdmin() && isLatest && res.length >= 4) summary = `🏁 Finale da organizzare`;
+        else if (res[0]) summary = `🥇 Regular season: <b>${esc(res[0].name)}</b>`;
+        else summary = `<span class="meta">Nessun risultato archiviato.</span>`;
+
+        const isOpen = state.openSeasonId === s.id;
+        const header = `<div data-toggleseason="${s.id}" style="cursor:pointer">
+          <h3 style="display:flex;align-items:center;gap:8px">
+            <span style="flex:1">${esc(s.name).toUpperCase()}</span>
+            ${isOpen && isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina">✏️</button>` : ""}
+            <span style="font-size:12px;opacity:0.6">${isOpen ? "▲" : "▼"}</span>
+          </h3>
+          <p class="meta" style="margin-bottom:${isOpen ? "10px" : "0"}">${dates}</p>
+          ${isOpen ? "" : `<p style="font-size:14px;margin-top:6px">${summary}</p>`}
+        </div>`;
+
         return `<div class="info-card">
-          <h3>${esc(s.name).toUpperCase()} ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina" style="float:right">✏️</button>` : ""}</h3>
-          <p class="meta" style="margin-bottom:10px">${dates}</p>
+          ${header}
+          ${isOpen ? `
           ${finaleHTML}
           <div class="section-label" style="margin:0 0 6px">REGULAR SEASON</div>
           ${podium || `<p class="meta">Nessun risultato archiviato.</p>`}
           ${awLines ? `<div style="margin-top:8px">${awLines}</div>` : ""}
-          ${fullList}
+          ${fullList}` : ""}
         </div>`;
       }).join("");
     }
+    const planned = plannedSeasons()
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    if (planned.length) {
+      html += `<div class="section-label" style="margin-top:22px">PROSSIME STAGIONI, IN ORDINE</div>`;
+      html += planned.map((s, i) =>
+        `<div class="row">
+          <div style="flex:1;min-width:0">
+            <div class="player-name">${esc(s.name)}</div>
+            <div class="meta">${i === 0 ? "parte alla chiusura della stagione in corso" : `parte dopo "${esc(planned[i - 1].name)}"`}${s.ends_at ? ` · fine prevista ${fmtDate(s.ends_at, false)}` : ""}</div>
+            ${isAdmin() ? `<input type="date" data-seasonend="${s.id}" value="${s.ends_at ? s.ends_at.slice(0, 10) : ""}"
+              style="margin-top:6px;padding:7px 10px;border:none;border-radius:7px;font-size:13px;background:var(--cream);color:#1c1c1c">` : ""}
+          </div>
+          ${isAdmin() ? `<button class="edit-btn" data-renameseason="${s.id}" title="Rinomina">✏️</button>
+          <button class="del-btn" data-delseason="${s.id}">✕</button>` : ""}
+        </div>`).join("");
+    }
+
     app.innerHTML = html;
     return;
   }
@@ -3620,6 +3671,13 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.createfinale) {
     if (!confirm("Lanciare la finale a 4 con i finalisti indicati?")) return;
     return withBusy(() => createFinale(t.dataset.createfinale));
+  }
+  const tsEl = e.target.closest?.("[data-toggleseason]");
+  if (tsEl && !e.target.closest("button") && !e.target.closest("input")) {
+    const sid = tsEl.dataset.toggleseason;
+    state.openSeasonId = state.openSeasonId === sid ? null : sid;
+    render();
+    return;
   }
   if (t.dataset.createplayin) {
     if (!confirm("Lanciare il play-in coi 4 giocatori indicati?")) return;
